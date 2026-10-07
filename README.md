@@ -4,13 +4,13 @@ Predict whether a telecom customer will churn, and investigate:
 1. Do usage, usage-change and service-quality features improve prediction beyond customer and billing features?
 2. Which tenure/spending groups contain the most missed churners (false negatives)?
 
-**Data:** Cell2Cell telecom churn dataset, `cell2celltrain.csv`: 51,047 labelled customers × 58 columns, churn rate 28.8%. The original holdout file has no labels and is not used. The data file is not stored in this repository; download it from our [Google Drive folder](https://drive.google.com/drive/folders/1oVlHRakuFTE_EgKDbQ75KSdIqoTyB_IR).
+**Data:** Cell2Cell telecom churn dataset, `cell2celltrain.csv`: 51,047 labelled customers × 58 columns, churn rate 28.8%. The original holdout file has no labels and is not used.
 
 ## Repository structure (main)
 
 ```
 dataset/
-  cell2celltrain.csv   raw data with all customers (download from Google Drive, not in the repo)
+  cell2celltrain.csv   raw data with all customers
   split.csv            no customer data, only which customers are in the 80% training set
                        and which in the 20% test set, so everyone uses the same split; do not change
 src/
@@ -27,8 +27,6 @@ git clone https://github.com/97-serena/Data-Mining-Project.git
 cd Data-Mining-Project
 pip install -r requirements.txt
 ```
-
-Then put `cell2celltrain.csv` from Google Drive into `dataset/`.
 
 ## Project phases
 
