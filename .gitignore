@@ -218,3 +218,9 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Local environments
+.conda/
+
+# Raw data: download from Google Drive (see README)
+dataset/cell2celltrain.csv
