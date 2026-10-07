@@ -12,7 +12,7 @@ Two files per person, uploaded to this `exploration` branch:
 
 ## Steps
 
-1. Clone the repo, `git checkout exploration`, and put `cell2celltrain.csv` into `dataset/` (see the main README).
+1. Clone the repo and `git checkout exploration` (the data is already included in `dataset/`).
 2. Copy `eda_template.ipynb` and rename the copy to `eda_<yourname>.ipynb`. **Never edit the template itself**; it is the shared starting point for everyone.
 3. Run your notebook section by section and write your findings under each section.
 4. Fill in the decision table at the end, set `NAME` in the last cell, and run it.
