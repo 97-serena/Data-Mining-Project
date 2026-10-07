@@ -10,8 +10,9 @@ Predict whether a telecom customer will churn, and investigate:
 
 ```
 dataset/
-  cell2celltrain.csv   raw data (download from Google Drive, not in the repo)
-  split.csv            fixed 80/20 train/test split (CustomerID -> train/test), do not change
+  cell2celltrain.csv   raw data with all customers (download from Google Drive, not in the repo)
+  split.csv            no customer data, only which customers are in the 80% training set
+                       and which in the 20% test set, so everyone uses the same split; do not change
 src/
   data.py              load_train(): the 80% training part used for all analysis
 requirements.txt
