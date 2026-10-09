@@ -1,0 +1,57 @@
+column,group,issues,relation_to_churn,keep_drop,missing_handling,transformation,encoding,feature_ideas
+MonthlyRevenue,account_billing,"0.3% missing, few negative values, right-skewed",weak (AUC 0.485); lowest decile churns more,keep,median,"clip at 0, log1p",numeric,used for spending segments
+TotalRecurringCharge,account_billing,"0.3% missing, few negative values, typical plan prices",higher charge -> less churn (AUC 0.457),keep,median,clip at 0,numeric,
+OverageMinutes,account_billing,"0.3% missing, 46% zero, right-skewed","weak, slightly more churn with more overage (AUC 0.511)",keep,median,log1p,numeric,flag: any overage (> 0)
+MonthsInService,account_billing,"none, min 6 months",churn jumps to ~43% at 11-12 months (contract expiry),keep,none,none,numeric,flag: contract window (11-12 months)
+CurrentEquipmentDays,account_billing,few negative values,strongest feature (AUC 0.576); jump at ~300-365 days,keep,none,clip at 0,numeric,flag: handset >= 300 days
+Handsets,account_billing,right-skewed,more handsets -> slightly less churn (AUC 0.482),keep,none,clip at p99,numeric,
+HandsetModels,account_billing,"always <= Handsets, rho 0.91 with Handsets",weak (AUC 0.479),drop,-,-,-,redundant with Handsets
+UniqueSubs,account_billing,"right-skewed, rho 0.83 with ActiveSubs",weak (AUC 0.524),keep,none,clip at p99,numeric,inactive lines = UniqueSubs - ActiveSubs
+ActiveSubs,account_billing,always <= UniqueSubs,weak (AUC 0.511),unsure,none,clip at p99,numeric,may be replaced by inactive lines
+AdjustmentsToCreditRating,account_billing,96% zero,no signal (AUC 0.497),unsure,none,binarise (> 0),binary 0/1,
+MonthlyMinutes,usage,"0.3% missing, right-skewed",lower usage -> more churn (AUC 0.461); <= 53 min churns ~38%,keep,median,log1p,numeric,flag: very low usage
+DirectorAssistedCalls,usage,"0.3% missing, 48% zero, right-skewed",weak (AUC 0.486),unsure,median,log1p,numeric,
+RoamingCalls,usage,"0.3% missing, 69% zero, right-skewed",no signal (AUC 0.502),unsure,median,binarise (> 0),binary 0/1,
+ThreewayCalls,usage,73% zero,weak (AUC 0.486),unsure,none,binarise (> 0),binary 0/1,
+ReceivedCalls,usage,"right-skewed, highly correlated with other call counts",weak (AUC 0.472),unsure,none,log1p,numeric,
+OutboundCalls,usage,"right-skewed, highly correlated with other call counts",weak (AUC 0.473),unsure,none,log1p,numeric,
+InboundCalls,usage,"29% zero, highly correlated with other call counts",weak (AUC 0.468),unsure,none,log1p,numeric,
+PeakCallsInOut,usage,"right-skewed, highly correlated with other call counts",weak (AUC 0.471),keep,none,log1p,numeric,total calls = Peak + OffPeak (for quality rates)
+OffPeakCallsInOut,usage,"right-skewed, highly correlated with other call counts",weak (AUC 0.467),keep,none,log1p,numeric,total calls = Peak + OffPeak (for quality rates)
+CallForwardingCalls,usage,99.6% zero,no signal (AUC 0.500),drop,-,-,-,
+CallWaitingCalls,usage,"49% zero, right-skewed",weak (AUC 0.480),unsure,none,binarise (> 0),binary 0/1,
+PercChangeMinutes,usage_change_retention,"0.7% missing, extreme values (-3406% to 5192%)",usage drop -> more churn (AUC 0.469),keep,median + missing flag,clip at p1/p99,numeric,flag: strong usage drop
+PercChangeRevenues,usage_change_retention,"0.7% missing, extreme values",U-shaped: large changes either way -> more churn (AUC 0.497),keep,median + missing flag,clip at p1/p99,numeric,absolute change
+RetentionCalls,usage_change_retention,97% zero,45% churn if > 0 vs 28%,drop,-,-,-,leakage: likely after decision to leave
+RetentionOffersAccepted,usage_change_retention,98% zero,43% churn if > 0 vs 29%,drop,-,-,-,leakage
+MadeCallToRetentionTeam,usage_change_retention,only 3% Yes,45% churn if Yes vs 28%,drop,-,-,-,leakage
+ReferralsMadeBySubscriber,usage_change_retention,95% zero,no signal (AUC 0.499),unsure,none,binarise (> 0),binary 0/1,
+NewCellphoneUser,usage_change_retention,never Yes together with NotNewCellphoneUser,weak (28.1% vs 29.0%),keep,none,merge with NotNewCellphoneUser,one-hot (new / not new / unknown),one variable with 3 levels; ~67% unknown
+NotNewCellphoneUser,usage_change_retention,never Yes together with NewCellphoneUser,weak (28.6% vs 30.1%),drop,-,merged into NewCellphoneUser,-,
+DroppedCalls,service_quality,"right-skewed, follows usage (rho 0.66 with MonthlyMinutes)",as count counter-intuitive (AUC 0.487); as rate positive (AUC 0.521),keep,none,"convert to rate, cap at 1",numeric,dropped calls / total calls; rate 0 + flag if no calls
+BlockedCalls,service_quality,"27% zero, right-skewed",weak as count (AUC 0.491),keep,none,"convert to rate, cap at 1",numeric,blocked calls / total calls
+UnansweredCalls,service_quality,"right-skewed, follows usage (rho 0.70 with MonthlyMinutes)",counter-intuitive as count (AUC 0.472),keep,none,"convert to rate, cap at 1",numeric,unanswered calls / total calls
+DroppedBlockedCalls,service_quality,= DroppedCalls + BlockedCalls for 96.7%,weak (AUC 0.485),drop,-,-,-,redundant
+CustomerCareCalls,service_quality,"55% zero, right-skewed",no care calls -> more churn (31% vs 24%),keep,none,log1p,numeric,flag: any care call (> 0)
+AgeHH1,demographics_region,"27% zero (= unknown), 1.8% missing",weak (AUC 0.482),keep,"0 -> NaN, median + unknown flag",none,numeric,placeholders co-occur: one 'demographics unknown' flag may be enough
+AgeHH2,demographics_region,"51% zero, 1.8% missing; 0 may mean no second adult",weak (AUC 0.491),unsure,"0 -> NaN, median + unknown flag",none,numeric,
+ChildrenInHH,demographics_region,none,no signal (28.6% vs 29.4%),unsure,none,none,binary 0/1,
+IncomeGroup,demographics_region,25% zero (= unknown),no clear pattern (AUC 0.491),keep,"0 -> NaN, median + unknown flag",none,ordinal 1-9,
+Occupation,demographics_region,74% 'Other',weak (27.6%-31.9%),unsure,none,none,one-hot,
+MaritalStatus,demographics_region,39% Unknown,weak (27.3%-30.2%),keep,keep 'Unknown' as category,none,one-hot,
+Homeownership,demographics_region,only Known / Unknown (34% Unknown),weak (28.4% vs 29.7%),keep,none,none,binary 0/1,acts as an unknown flag
+CreditRating,demographics_region,text categories 1-Highest ... 7-Lowest,non-monotonic: lowest churn at 5-Low (22%),keep,none,none,one-hot,
+PrizmCode,demographics_region,none,Rural churns most (32%),keep,none,none,one-hot,
+ServiceArea,demographics_region,"729 levels, many with few customers, 0.05% missing",per-area rates unreliable (0-100%),keep,'Unknown',first 3 letters (57 cities),target encoding (inside CV),
+HandsetPrice,handset_lifestyle,"57% Unknown, stored as text",price itself no effect (~27% in all ranges); Unknown 30%,keep,"Unknown -> NaN, median + unknown flag",convert to numeric,numeric,
+HandsetRefurbished,handset_lifestyle,none,"Yes -> more churn (32% vs 28%), not because older",keep,none,none,binary 0/1,
+HandsetWebCapable,handset_lifestyle,none,No -> more churn (37% vs 28%); these phones are old,keep,none,none,binary 0/1,
+TruckOwner,handset_lifestyle,none,no signal,drop,-,-,-,
+RVOwner,handset_lifestyle,none,no signal,drop,-,-,-,
+OwnsMotorcycle,handset_lifestyle,very rare,no reliable signal,drop,-,-,-,
+OwnsComputer,handset_lifestyle,none,no signal,drop,-,-,-,
+HasCreditCard,handset_lifestyle,none,no signal,drop,-,-,-,
+BuysViaMailOrder,handset_lifestyle,none,weak (AUC 0.488),unsure,none,none,binary 0/1,
+RespondsToMailOffers,handset_lifestyle,none,weak (AUC 0.487),unsure,none,none,binary 0/1,
+OptOutMailings,handset_lifestyle,very rare,no signal,drop,-,-,-,
+NonUSTravel,handset_lifestyle,none,no signal,drop,-,-,-,
