@@ -30,7 +30,7 @@ One row per feature, saying how you would handle it. `group` and `column` are pr
 |---|---|
 | `issues` | What problems does the column have (missing, placeholders, outliers, skew, redundancy)? |
 | `relation_to_churn` | Is it related to churn, how strongly, in which direction? |
-| `keep_drop` | keep / drop / unsure |
+| `keep_drop` | keep / drop / keep (feature selection) — the last one means: keep it in preprocessing, and let feature selection in cross-validation decide whether the model uses it |
 | `missing_handling` | none / median / mode / placeholder → NaN + indicator / ... |
 | `transformation` | none / log1p / clip / binarise / ... |
 | `encoding` | numeric / binary 0-1 / ordinal / one-hot / ... |
