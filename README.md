@@ -6,7 +6,7 @@ Predict whether a telecom customer will churn, and investigate:
 
 **Data:** Cell2Cell telecom churn dataset, `cell2celltrain.csv`: 51,047 labelled customers × 58 columns, churn rate 28.8%. The original holdout file has no labels and is not used.
 
-## Repository structure (main)
+## Repository structure
 
 ```
 dataset/
@@ -15,18 +15,71 @@ dataset/
                        and which in the 20% test set, so everyone uses the same split; do not change
 src/
   data.py              load_train(): the 80% training part used for all analysis
-requirements.txt
+notebooks/
+  data_exploration.py   shared analysis as a Jupytext notebook
+  preprocessing.py     preprocessing starter as a Jupytext notebook
+requirements.in        direct dependencies
+requirements.txt       pinned shared dependencies
+.python-version        shared Python version
 ```
 
 `main` only contains the agreed, final state of the project. Work in progress happens on other branches.
 
-## Setup
+## Local setup
+
+Install [uv](https://docs.astral.sh/uv/getting-started/installation/) first. Use the
+repository's `.python-version` and pinned `requirements.txt` so the team uses the same
+Python version and dependency versions. Each person keeps their own `.venv`.
+
+From a clone containing these files:
 
 ```bash
-git clone https://github.com/97-serena/Data-Mining-Project.git
-cd Data-Mining-Project
-pip install -r requirements.txt
+uv venv
+uv pip sync requirements.txt
 ```
+
+`uv` downloads the pinned Python version if it is not installed. To open JupyterLab:
+
+```bash
+source .venv/bin/activate
+jupyter lab
+```
+
+On Windows PowerShell, activate with `.venv\Scripts\Activate.ps1` instead. Run these
+commands from the repository root. In JupyterLab, right-click a file under `notebooks/`
+and select **Open With → Notebook** (or **Jupytext Notebook**). If JupyterLab was already
+running when Jupytext was installed, restart it.
+
+### Text notebooks
+
+- `notebooks/data_exploration.py`: analysis and agreed feature decisions
+- `notebooks/preprocessing.py`: the original partition checks and feature-set setup only
+
+These are Jupytext percent-format notebooks (`# %%` code cells and `# %% [markdown]`
+text cells). Their file headers select **only** `py:percent`: saving in JupyterLab keeps
+the `.py` source and does not create a paired `.ipynb`. Outputs are available during the
+session but are not stored in the text file; rerun the cells to reproduce them.
+The existing notebooks under `eda/` are unchanged.
+
+For **VS Code**, install Microsoft's **Python** and **Jupyter** extensions yourself.
+Open the repository folder, select its `.venv` interpreter/kernel, open a text notebook,
+and use **Run Cell** or **Run All Cells**. JupyterLab and VS Code use the same source files,
+environment and shared `src/` modules. The notebooks work when the kernel starts in the
+repository root or `notebooks/`; no shared helper changes are needed.
+
+### Updating dependencies
+
+Edit direct dependencies in `requirements.in`, then regenerate the shared lock from
+the repository root:
+
+```bash
+uv pip compile --universal --python-version 3.12.16 requirements.in -o requirements.txt
+uv pip sync requirements.txt
+```
+
+Commit both requirement files together. The universal resolution includes platform
+markers for macOS, Linux and Windows; optional platform dependencies can differ while
+shared packages stay pinned. Do not commit `.venv`, notebook outputs or local exports.
 
 ## Project phases
 
