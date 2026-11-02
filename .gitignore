@@ -221,3 +221,6 @@ __marimo__/
 
 # Local environments
 .conda/
+
+# local exports of the shared text notebooks
+notebooks/*.ipynb
