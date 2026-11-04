@@ -18,23 +18,26 @@
 #
 # The sections below follow the team's preprocessing task list, with the owner of each task.
 # Please work in your own section. Sections 1 and 2 contain code; sections 3 to 9 are still to
-# be implemented. `data_exploration.py` section 8 holds the detailed decisions from the
-# exploration. Where it differs from the task list, the section says **Open question**.
+# be implemented. Implementation details follow `data_exploration.py` section 8, except where a
+# section says **Open question**.
 #
 # We use the repository's committed split and shared loader. The model baseline, group-addition
 # order, training and evaluation belong to the later modeling notebook.
 
 # %%
-# locate the repository root
+# locate the repository from its root or the notebooks folder
 from pathlib import Path
 import sys
 
 project_root = Path.cwd()
 shared_loader_file = project_root / 'src' / 'data.py'
+if not shared_loader_file.is_file():
+    project_root = project_root.parent
+    shared_loader_file = project_root / 'src' / 'data.py'
 
 # stop with a clear message when the notebook is opened outside the project
 if not shared_loader_file.is_file():
-    raise FileNotFoundError('Open this notebook from the repository root')
+    raise FileNotFoundError('Open this notebook from the repository root or notebooks folder')
 
 # make the shared project modules available
 sys.path.insert(0, str(project_root))
@@ -135,8 +138,10 @@ display(feature_summary)
 #
 # **Owner:** Shiqi
 #
-# Standardize missing-value markers (NA, empty cells), handle negative `CurrentEquipmentDays`,
-# and implement numerical median imputation and categorical Unknown handling.
+# Standardize missing-value markers (`NA`, `empty`) and turn negative `CurrentEquipmentDays` into
+# missing. Use training-fold median imputation with per-column missingness indicators for numeric
+# features. Use `__MISSING__` for genuine nonbinary categorical missing values, and keep recorded
+# Unknown/Other values separate.
 
 # %%
 # TODO (Shiqi)
@@ -146,12 +151,9 @@ display(feature_summary)
 #
 # **Owner:** Shiqi
 #
-# Retain `IncomeGroup` = 0 as a separate category. Compare keeping zeros in `AgeHH1`/`AgeHH2`
-# against replacing them with medians, while preserving zero-value indicators. Treat
+# Retain `IncomeGroup` = 0 as a separate category. Retain recorded zeros in `AgeHH1`/`AgeHH2` and
+# add `age1_zero`/`age2_zero` before imputation; genuine missing ages stay distinct. Treat
 # `HandsetPrice` as categorical.
-#
-# **Open question:** `data_exploration.py` section 8 retains the age zeros and adds `age1_zero`
-# and `age2_zero`, without the comparison against medians.
 
 # %%
 # TODO (Shiqi)
@@ -162,11 +164,10 @@ display(feature_summary)
 # **Owner:** Yan-Ru
 #
 # Encode yes/no features as 0/1 and apply one-hot encoding to other categorical features,
-# including `IncomeGroup` and `CreditRating`. Compare one-hot and smoothed target encoding for
-# `ServiceArea`, with internal cross-fitting to prevent leakage.
+# including `IncomeGroup` and `CreditRating`.
 #
-# **Open question:** `data_exploration.py` section 8 one-hot encodes `ServiceArea` and rules out
-# target encoding.
+# **Open question:** how to encode `ServiceArea` (one-hot or smoothed target encoding with internal
+# cross-fitting). `data_exploration.py` section 8 currently says one-hot.
 
 # %%
 # TODO (Yan-Ru)
@@ -188,10 +189,8 @@ display(feature_summary)
 # **Owner:** Yannis
 #
 # Implement the feature-group definitions established during EDA, including the planned
-# engineered features. Define the full feature set and leave-one-group-out configurations.
-#
-# **Open question:** `data_exploration.py` adds feature groups incrementally and states that
-# leave-one-group-out is not the selected comparison.
+# engineered features. Define the full feature set and the configurations that add feature groups
+# incrementally. A derivative is available only when all of its parent groups are present.
 
 # %%
 # TODO (Yannis)
@@ -201,11 +200,11 @@ display(feature_summary)
 #
 # **Owner:** All
 #
-# Implement numerical scaling for Logistic Regression and evaluate log transformations for
-# suitable highly skewed variables. Keep numerical features unscaled for tree-based models.
+# Implement training-fold scaling of continuous numerical columns for Logistic Regression. Keep
+# numerical features unscaled for tree-based models. Do not delete rows or clip values.
 #
-# **Open question:** `data_exploration.py` section 8 applies no log or power transformation and
-# no numerical clipping.
+# **Open question:** whether Logistic Regression uses `log1p` on highly skewed nonnegative columns.
+# `data_exploration.py` section 8 currently says no log transformation.
 
 # %%
 # TODO (All)

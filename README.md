@@ -15,8 +15,9 @@ dataset/
                        and which in the 20% test set, so everyone uses the same split; do not change
 src/
   data.py              load_train(): the 80% training part used for all analysis
-data_exploration.py    final exploration as a Jupytext notebook
-preprocessing.py       preprocessing steps as a Jupytext notebook, one section per task
+notebooks/
+  data_exploration.py   shared analysis as a Jupytext notebook
+  preprocessing.py     preprocessing steps as a Jupytext notebook, one section per task
 requirements.in        direct dependencies
 requirements.txt       pinned shared dependencies
 .python-version        shared Python version
@@ -45,14 +46,14 @@ jupyter lab
 ```
 
 On Windows PowerShell, activate with `.venv\Scripts\Activate.ps1` instead. Run these
-commands from the repository root. In JupyterLab, right-click `data_exploration.py` or
-`preprocessing.py` and select **Open With → Notebook** (or **Jupytext Notebook**). If JupyterLab was already
+commands from the repository root. In JupyterLab, right-click a file under `notebooks/`
+and select **Open With → Notebook** (or **Jupytext Notebook**). If JupyterLab was already
 running when Jupytext was installed, restart it.
 
 ### Text notebooks
 
-- `data_exploration.py`: final exploration and feature decisions
-- `preprocessing.py`: the preprocessing tasks, one section per task with its owner
+- `notebooks/data_exploration.py`: analysis and agreed feature decisions
+- `notebooks/preprocessing.py`: the preprocessing tasks, one section per task with its owner
 
 These are Jupytext percent-format notebooks (`# %%` code cells and `# %% [markdown]`
 text cells). Their file headers select **only** `py:percent`: saving in JupyterLab keeps
@@ -62,7 +63,8 @@ session but are not stored in the text file; rerun the cells to reproduce them.
 For **VS Code**, install Microsoft's **Python** and **Jupyter** extensions yourself.
 Open the repository folder, select its `.venv` interpreter/kernel, open a text notebook,
 and use **Run Cell** or **Run All Cells**. JupyterLab and VS Code use the same source files,
-environment and shared `src/` modules. Start the kernel in the repository root.
+environment and shared `src/` modules. The notebooks work when the kernel starts in the
+repository root or `notebooks/`; no shared helper changes are needed.
 
 ### Updating dependencies
 
@@ -82,13 +84,13 @@ shared packages stay pinned. Do not commit `.venv`, notebook outputs or local ex
 
 | Phase | Branch | Status |
 |---|---|---|
-| 1. Data exploration | `exploration` (archive), final version in `data_exploration.py` | done |
+| 1. Data exploration | `exploration` (archive), final version in `notebooks/data_exploration.py` | done |
 | 2. Agreed preprocessing | `preprocessing` → merged into `main` | **current** |
 | 3. Modelling and analysis | to be decided | later |
 
-**Phase 1:** the final exploration is `data_exploration.py`. The individual notebooks and the original Colab version stay on the [`exploration` branch](https://github.com/97-serena/Data-Mining-Project/tree/exploration/eda) as an archive.
+**Phase 1:** the final exploration is `notebooks/data_exploration.py`. The individual notebooks and the original Colab version stay on the [`exploration` branch](https://github.com/97-serena/Data-Mining-Project/tree/exploration/eda) as an archive.
 
-**Phase 2:** we work through the team's preprocessing task list in `preprocessing.py` on `preprocessing`, and then merge the result into `main`. Section 8 of `data_exploration.py` holds the detailed decisions; differences from the task list are marked as open questions in `preprocessing.py`.
+**Phase 2:** we work through the team's preprocessing task list in `notebooks/preprocessing.py` on `preprocessing`, and then merge the result into `main`. Implementation details follow section 8 of `notebooks/data_exploration.py`, except where `preprocessing.py` marks an open question.
 
 ## Ground rules
 
