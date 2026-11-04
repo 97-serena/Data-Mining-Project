@@ -19,7 +19,7 @@
 # The sections below follow the team's preprocessing task list, with the owner of each task.
 # Please work in your own section. Sections 1 and 2 contain code; sections 3 to 9 are still to
 # be implemented. Implementation details follow `data_exploration.py` section 8, except where a
-# section says **Open question**.
+# section states a different default.
 #
 # We use the repository's committed split and shared loader. The model baseline, group-addition
 # order, training and evaluation belong to the later modeling notebook.
@@ -151,9 +151,11 @@ display(feature_summary)
 #
 # **Owner:** Shiqi
 #
-# Retain `IncomeGroup` = 0 as a separate category. Retain recorded zeros in `AgeHH1`/`AgeHH2` and
-# add `age1_zero`/`age2_zero` before imputation; genuine missing ages stay distinct. Treat
-# `HandsetPrice` as categorical.
+# Retain `IncomeGroup` = 0 as a separate category. Compare two options for zeros in
+# `AgeHH1`/`AgeHH2`: (a) keep the zeros and add `age1_zero`/`age2_zero`, or (b) replace them with
+# the training-fold median of nonzero ages, without indicators. If the results are tied, use (a).
+# Fill genuine missing ages with the training-fold median of nonzero ages and keep their
+# missingness indicators. Treat `HandsetPrice` as categorical.
 
 # %%
 # TODO (Shiqi)
@@ -166,8 +168,9 @@ display(feature_summary)
 # Encode yes/no features as 0/1 and apply one-hot encoding to other categorical features,
 # including `IncomeGroup` and `CreditRating`.
 #
-# **Open question:** how to encode `ServiceArea` (one-hot or smoothed target encoding with internal
-# cross-fitting). `data_exploration.py` section 8 currently says one-hot.
+# Use smoothed target encoding with internal cross-fitting for `ServiceArea` by default, and
+# compare it against one-hot in the final cross-validation. This differs from
+# `data_exploration.py` section 8, which uses one-hot.
 
 # %%
 # TODO (Yan-Ru)
@@ -203,8 +206,9 @@ display(feature_summary)
 # Implement training-fold scaling of continuous numerical columns for Logistic Regression. Keep
 # numerical features unscaled for tree-based models. Do not delete rows or clip values.
 #
-# **Open question:** whether Logistic Regression uses `log1p` on highly skewed nonnegative columns.
-# `data_exploration.py` section 8 currently says no log transformation.
+# For Logistic Regression, use `log1p` on highly skewed nonnegative columns by default, and compare
+# it against no log transformation in the final cross-validation. This differs from
+# `data_exploration.py` section 8, which applies no log transformation.
 
 # %%
 # TODO (All)

@@ -90,7 +90,7 @@ shared packages stay pinned. Do not commit `.venv`, notebook outputs or local ex
 
 **Phase 1:** the final exploration is `notebooks/data_exploration.py`. The individual notebooks and the original Colab version stay on the [`exploration` branch](https://github.com/97-serena/Data-Mining-Project/tree/exploration/eda) as an archive.
 
-**Phase 2:** we work through the team's preprocessing task list in `notebooks/preprocessing.py` on `preprocessing`, and then merge the result into `main`. Implementation details follow section 8 of `notebooks/data_exploration.py`, except where `preprocessing.py` marks an open question.
+**Phase 2:** we work through the team's preprocessing task list in `notebooks/preprocessing.py` on `preprocessing`, and then merge the result into `main`. Implementation details follow section 8 of `notebooks/data_exploration.py`, except where `preprocessing.py` states a different default.
 
 ## Ground rules
 
