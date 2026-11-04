@@ -59,7 +59,6 @@ These are Jupytext percent-format notebooks (`# %%` code cells and `# %% [markdo
 text cells). Their file headers select **only** `py:percent`: saving in JupyterLab keeps
 the `.py` source and does not create a paired `.ipynb`. Outputs are available during the
 session but are not stored in the text file; rerun the cells to reproduce them.
-The existing notebooks under `eda/` are unchanged.
 
 For **VS Code**, install Microsoft's **Python** and **Jupyter** extensions yourself.
 Open the repository folder, select its `.venv` interpreter/kernel, open a text notebook,
