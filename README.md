@@ -85,13 +85,13 @@ shared packages stay pinned. Do not commit `.venv`, notebook outputs or local ex
 
 | Phase | Branch | Status |
 |---|---|---|
-| 1. Individual data exploration | `exploration` | **current** (deadline: 11 October, 10:00 German time) |
-| 2. Agreed preprocessing | `preprocessing` → merged into `main` | next |
+| 1. Data exploration | `exploration` (archive), final version in `notebooks/data_exploration.py` | done |
+| 2. Agreed preprocessing | `preprocessing` → merged into `main` | **current** |
 | 3. Modelling and analysis | to be decided | later |
 
-**Phase 1:** everyone explores all 56 features independently and fills in a decision table. Instructions: [`eda/README.md` on the `exploration` branch](https://github.com/97-serena/Data-Mining-Project/tree/exploration/eda).
+**Phase 1:** the final exploration is `notebooks/data_exploration.py`. The individual notebooks and the original Colab version stay on the [`exploration` branch](https://github.com/97-serena/Data-Mining-Project/tree/exploration/eda) as an archive.
 
-**Phase 2:** we compare the decision tables, agree on one preprocessing plan, implement it on `preprocessing` and merge it into `main`. The `exploration` branch is then deleted.
+**Phase 2:** we continue in `notebooks/preprocessing.py` on `preprocessing`, following the decisions in section 8 of `notebooks/data_exploration.py`, and then merge the result into `main`.
 
 ## Ground rules
 
