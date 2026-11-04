@@ -1,5 +1,7 @@
 # Phase 1: Individual Data Exploration
 
+> **Phase 1 is closed.** The final exploration is `notebooks/data_exploration.py` on the `notebooks` branch. `Data_Exploration_colab.ipynb` is the original Colab version, kept for reference only. Do not continue work from it; its preprocessing section is superseded by `notebooks/preprocessing.py`.
+
 Everyone goes through **all 56 features** independently, so that we all know the data before writing the proposal.
 
 **Deadline: 11 October, 10:00 (German time)**
