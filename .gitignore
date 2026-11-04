@@ -223,4 +223,5 @@ __marimo__/
 .conda/
 
 # local exports of the shared text notebooks
-notebooks/*.ipynb
+/data_exploration.ipynb
+/preprocessing.ipynb

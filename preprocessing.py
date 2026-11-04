@@ -16,27 +16,25 @@
 # %% [markdown]
 # # Preprocessing
 #
-# This notebook contains only the data-partition checks and feature-set definitions already
-# present in the original notebook. We have not implemented imputation, encoding, feature
-# engineering or scaling here. The agreed preparation decisions are in `data_exploration.py`.
+# The sections below follow the team's preprocessing task list, with the owner of each task.
+# Please work in your own section. Sections 1 and 2 contain code; sections 3 to 9 are still to
+# be implemented. `data_exploration.py` section 8 holds the detailed decisions from the
+# exploration. Where it differs from the task list, the section says **Open question**.
 #
 # We use the repository's committed split and shared loader. The model baseline, group-addition
 # order, training and evaluation belong to the later modeling notebook.
 
 # %%
-# locate the repository from its root or the notebooks folder
+# locate the repository root
 from pathlib import Path
 import sys
 
 project_root = Path.cwd()
 shared_loader_file = project_root / 'src' / 'data.py'
-if not shared_loader_file.is_file():
-    project_root = project_root.parent
-    shared_loader_file = project_root / 'src' / 'data.py'
 
 # stop with a clear message when the notebook is opened outside the project
 if not shared_loader_file.is_file():
-    raise FileNotFoundError('Open this notebook from the repository root or notebooks folder')
+    raise FileNotFoundError('Open this notebook from the repository root')
 
 # make the shared project modules available
 sys.path.insert(0, str(project_root))
@@ -47,7 +45,9 @@ from IPython.display import display
 from src.data import load_train
 
 # %% [markdown]
-# ## 1. Data partitioning
+# ## 1. Prepare dataset and target variable
+#
+# **Owner:** Shiqi
 #
 # We verify the predefined customer assignments and the training partition. We do not recreate
 # the split or inspect test outcomes while preparing the workflow.
@@ -87,7 +87,9 @@ print('Training churn distribution:')
 print(training_churn_distribution)
 
 # %% [markdown]
-# ### 1.1 Feature-set definition
+# ## 2. Handle potential data leakage
+#
+# **Owner:** Paola
 #
 # We exclude the identifier and target from predictors. The three retention fields remain
 # outside the main set because their prediction-time availability is uncertain; we preserve
@@ -127,3 +129,94 @@ feature_summary = pd.DataFrame({
     'raw_predictors': [len(main_features), len(with_retention_features)],
 })
 display(feature_summary)
+
+# %% [markdown]
+# ## 3. Handle missing values and invalid entries
+#
+# **Owner:** Shiqi
+#
+# Standardize missing-value markers (NA, empty cells), handle negative `CurrentEquipmentDays`,
+# and implement numerical median imputation and categorical Unknown handling.
+
+# %%
+# TODO (Shiqi)
+
+# %% [markdown]
+# ## 4. Handle special values and categories
+#
+# **Owner:** Shiqi
+#
+# Retain `IncomeGroup` = 0 as a separate category. Compare keeping zeros in `AgeHH1`/`AgeHH2`
+# against replacing them with medians, while preserving zero-value indicators. Treat
+# `HandsetPrice` as categorical.
+#
+# **Open question:** `data_exploration.py` section 8 retains the age zeros and adds `age1_zero`
+# and `age2_zero`, without the comparison against medians.
+
+# %%
+# TODO (Shiqi)
+
+# %% [markdown]
+# ## 5. Encode categorical features
+#
+# **Owner:** Yan-Ru
+#
+# Encode yes/no features as 0/1 and apply one-hot encoding to other categorical features,
+# including `IncomeGroup` and `CreditRating`. Compare one-hot and smoothed target encoding for
+# `ServiceArea`, with internal cross-fitting to prevent leakage.
+#
+# **Open question:** `data_exploration.py` section 8 one-hot encodes `ServiceArea` and rules out
+# target encoding.
+
+# %%
+# TODO (Yan-Ru)
+
+# %% [markdown]
+# ## 6. Implement feature engineering
+#
+# **Owner:** Kaustubh
+#
+# Assign each engineered feature to its corresponding feature group and implement it. The seven
+# selected features are defined in `data_exploration.py` section 8.
+
+# %%
+# TODO (Kaustubh)
+
+# %% [markdown]
+# ## 7. Prepare feature sets for modeling
+#
+# **Owner:** Yannis
+#
+# Implement the feature-group definitions established during EDA, including the planned
+# engineered features. Define the full feature set and leave-one-group-out configurations.
+#
+# **Open question:** `data_exploration.py` adds feature groups incrementally and states that
+# leave-one-group-out is not the selected comparison.
+
+# %%
+# TODO (Yannis)
+
+# %% [markdown]
+# ## 8. Implement numerical transformations
+#
+# **Owner:** All
+#
+# Implement numerical scaling for Logistic Regression and evaluate log transformations for
+# suitable highly skewed variables. Keep numerical features unscaled for tree-based models.
+#
+# **Open question:** `data_exploration.py` section 8 applies no log or power transformation and
+# no numerical clipping.
+
+# %%
+# TODO (All)
+
+# %% [markdown]
+# ## 9. Build and validate preprocessing pipelines
+#
+# **Owner:** All
+#
+# Combine the transformations into reproducible pipelines. Ensure imputation, encoding, scaling
+# and other learned transformations are fitted only on training folds during cross-validation.
+
+# %%
+# TODO (All)

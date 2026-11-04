@@ -28,15 +28,13 @@
 # notebook; the model baseline, group-addition order, training and evaluation belong to the modeling stage.
 
 # %%
-# locate the repository from its root or the notebooks folder
+# locate the repository root
 from pathlib import Path
 import sys
 
 project_root = Path.cwd()
 if not (project_root / 'src' / 'data.py').is_file():
-    project_root = project_root.parent
-if not (project_root / 'src' / 'data.py').is_file():
-    raise FileNotFoundError('Open this notebook from the repository root or notebooks folder')
+    raise FileNotFoundError('Open this notebook from the repository root')
 
 # make the shared project modules available
 sys.path.insert(0, str(project_root))
