@@ -118,7 +118,7 @@ class AgeImputer(BaseEstimator, TransformerMixin):
             raise ValueError("zero_strategy must be 'keep' or 'median'")
         X = pd.DataFrame(X)[list(AGE_ZERO_FLAGS)]
         self.feature_names_in_ = np.asarray(X.columns, dtype=object)
-        self.medians_ = {c: X.loc[X[c] > 0, c].median() for c in X.columns}
+        self.medians_ = {c: float(X.loc[X[c] > 0, c].median()) for c in X.columns}
         self.indicator_columns_ = [c for c in X.columns if X[c].isna().any()]
         return self
 

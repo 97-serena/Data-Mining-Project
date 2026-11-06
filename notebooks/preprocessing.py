@@ -151,6 +151,9 @@ display(feature_summary)
 #   pipeline it runs after the engineered features (section 6), because derivatives are computed
 #   before imputation.
 #
+# After `clean_raw()` the numeric columns therefore still contain missing values; only the imputer
+# fills them.
+#
 # In the data, missing values are stored as `NA` or empty cells, which `read_csv` already reads as
 # missing; the marker `empty` does not occur. The missingness indicator for `PercChangeMinutes` is
 # named `ChangeMissing`, so section 6 should not create it again.
@@ -168,10 +171,10 @@ from src.preprocessing import (
 
 clean = clean_raw(train)
 
-# compare missing values before and after cleaning
+# compare missing values before and after cleaning; numeric gaps stay until the imputer runs
 missing_summary = pd.DataFrame({
-    'missing_before': train.isna().sum(),
-    'missing_after': clean.isna().sum(),
+    'before_cleaning': train.isna().sum(),
+    'after_cleaning': clean.isna().sum(),
 })
 has_missing = missing_summary.sum(axis=1) > 0
 display(missing_summary[has_missing])
@@ -207,9 +210,20 @@ assert median_imputer.medians_.equals(fit_part[numeric_columns].median())
 assert imputed_check.isna().sum().sum() == 0
 assert list(imputed_check.columns) == list(median_imputer.get_feature_names_out())
 
+# show the missing values in the validation fold before and after imputation
 indicator_columns = [c for c in imputed_check.columns if c not in numeric_columns]
 print('Numeric columns:', len(numeric_columns), '| indicators added:', len(indicator_columns))
-print(indicator_columns)
+print('Missing values in the validation fold:',
+      int(check_part[numeric_columns].isna().sum().sum()), 'before imputation,',
+      int(imputed_check.isna().sum().sum()), 'after')
+
+# list each indicator with the column it describes and its training-fold median
+indicator_table = pd.DataFrame({
+    'column': median_imputer.indicator_columns_,
+    'indicator': indicator_columns,
+    'training_fold_median': median_imputer.medians_[median_imputer.indicator_columns_].values,
+})
+display(indicator_table)
 
 # %% [markdown]
 # ## 4. Handle special values and categories
