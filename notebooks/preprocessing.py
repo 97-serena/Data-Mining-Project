@@ -250,7 +250,10 @@ assert (clean['IncomeGroup'] == '0').sum() == (train['IncomeGroup'] == 0).sum()
 # %%
 # fit both age options on the same training fold and apply them to the validation fold
 age_columns = list(AGE_ZERO_FLAGS)
-for strategy in ['keep', 'median']:
+option_labels = {'keep': '(a) keep', 'median': '(b) median'}
+option_rows = []
+option_outputs = {}
+for strategy, label in option_labels.items():
     age_imputer = AgeImputer(zero_strategy=strategy).fit(fit_part[age_columns])
     ages = age_imputer.transform(check_part[age_columns])
 
@@ -261,15 +264,33 @@ for strategy in ['keep', 'median']:
     assert ages.isna().sum().sum() == 0
     assert list(ages.columns) == list(age_imputer.get_feature_names_out())
 
-    print(f'zero_strategy="{strategy}"')
-    print('  training-fold medians of nonzero ages:', age_imputer.medians_)
-    print('  output columns:', list(ages.columns))
-    print('  ages equal to 0 after imputation:', int((ages[age_columns] == 0).sum().sum()))
+    # in option (a), the zero flags match the recorded zeros
+    if strategy == 'keep':
+        for column, flag in AGE_ZERO_FLAGS.items():
+            assert ages[flag].sum() == (check_part[column] == 0).sum()
 
-# in option (a), the zero flags match the recorded zeros
-kept = AgeImputer(zero_strategy='keep').fit(fit_part[age_columns]).transform(check_part[age_columns])
-for column, flag in AGE_ZERO_FLAGS.items():
-    assert kept[flag].sum() == (check_part[column] == 0).sum()
+    # collect the results for the summary tables
+    option_rows.append({
+        'option': label,
+        'AgeHH1 median': age_imputer.medians_['AgeHH1'],
+        'AgeHH2 median': age_imputer.medians_['AgeHH2'],
+        'zeros left in validation fold': int((ages[age_columns] == 0).sum().sum()),
+        'output columns': ages.shape[1],
+    })
+    option_outputs[label] = list(ages.columns)
+
+# compare the two options: training-fold medians and zeros left after imputation
+display(pd.DataFrame(option_rows).set_index('option'))
+
+# show which output columns each option produces
+all_output_columns = list(dict.fromkeys(option_outputs['(a) keep'] + option_outputs['(b) median']))
+column_table = pd.DataFrame(
+    {label: ['yes' if c in columns else '-' for c in all_output_columns]
+     for label, columns in option_outputs.items()},
+    index=all_output_columns,
+)
+column_table.index.name = 'output column'
+display(column_table)
 
 # %% [markdown]
 # ## 5. Encode categorical features
