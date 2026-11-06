@@ -15,6 +15,7 @@ dataset/
                        and which in the 20% test set, so everyone uses the same split; do not change
 src/
   data.py              load_train(): the 80% training part used for all analysis
+  preprocessing.py     shared preprocessing steps, reused by the pipelines and the modeling
 notebooks/
   data_exploration.py   shared analysis as a Jupytext notebook
   preprocessing.py     preprocessing steps as a Jupytext notebook, one section per task
