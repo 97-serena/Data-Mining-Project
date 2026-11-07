@@ -323,10 +323,14 @@ The returned matrix is sparse where one-hot encoding makes that useful.
     if binary_columns:
         transformations.append(("binary", BinaryEncoder(), binary_columns))
 
-    if "ServiceArea" in categorical_columns and service_area_encoding == "target":
+    # Keep ServiceArea separate from the other nominal features for both options.
+    if "ServiceArea" in categorical_columns:
         categorical_columns.remove("ServiceArea")
-        inner_folds = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
-        area_encoder = TargetEncoder(target_type="binary", smooth="auto", cv=inner_folds)
+        if service_area_encoding == "target":
+            inner_folds = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+            area_encoder = TargetEncoder(target_type="binary", smooth="auto", cv=inner_folds)
+        else:
+            area_encoder = OneHotEncoder(handle_unknown="ignore", sparse_output=True)
         transformations.append(("service_area", area_encoder, ["ServiceArea"]))
 
     if categorical_columns:

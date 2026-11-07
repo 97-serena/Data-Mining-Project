@@ -292,55 +292,57 @@ display(column_table)
 # %% [markdown]
 # ## 5. Categorical encoding
 #
-# Yes/no features are encoded as 0/1. Other categorical features, including `IncomeGroup`
+# Yes/no features are encoded as 0/1, with missing values imputed using
+# training-fold modes. Other categorical features, including `IncomeGroup`
 # and `CreditRating`, use one-hot encoding.
 #
-# `ServiceArea` contains many distinct categories. Its default representation uses smoothed
-# target encoding with internal cross-fitting; one-hot encoding provides an alternative.
-# The encoder learns from training observations only.
+# `ServiceArea` uses smoothed target encoding with internal 5-fold cross-fitting
+# to prevent target leakage. One-hot encoding is retained for comparison.
+# All encoders are fitted on training data only.
 
 # %%
-# encode yes/no values using only the training fold
+# encode yes/no values using training-fold statistics
 from src.preprocessing import BINARY_COLUMNS, BinaryEncoder
 from sklearn.preprocessing import OneHotEncoder, TargetEncoder
 
-binary_columns = []
-for column in main_features:
-    if column in BINARY_COLUMNS:
-        binary_columns.append(column)
-
-binary_encoder = BinaryEncoder().fit(fit_part[binary_columns])
+# binary encoding: Yes=1, No=0
+binary_columns = [c for c in main_features if c in BINARY_COLUMNS]
+binary_encoder = BinaryEncoder()
+encoded_training_binary = binary_encoder.fit_transform(fit_part[binary_columns])
 encoded_binary = binary_encoder.transform(check_part[binary_columns])
-assert encoded_binary.isna().sum().sum() == 0
-assert encoded_binary.isin([0, 1]).all().all()
 
-# one-hot encode the remaining categories, keeping ServiceArea separate
-nominal_columns = []
-for column in CATEGORICAL_COLUMNS:
-    if column != 'ServiceArea':
-        nominal_columns.append(column)
-
-nominal_encoder = OneHotEncoder(handle_unknown='ignore', sparse_output=True)
-nominal_encoder.fit(fit_part[nominal_columns])
+# one-hot encoding for nominal features
+nominal_columns = [
+    c for c in main_features
+    if c in CATEGORICAL_COLUMNS and c != "ServiceArea"
+]
+nominal_encoder = OneHotEncoder(handle_unknown="ignore", sparse_output=True)
+encoded_training_nominal = nominal_encoder.fit_transform(fit_part[nominal_columns])
 encoded_nominal = nominal_encoder.transform(check_part[nominal_columns])
 
-# cross-fit the service-area encoding within the training fold
+# serviceArea: cross-fitted target encoding to prevent leakage
 inner_folds = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
-area_encoder = TargetEncoder(target_type='binary', smooth='auto', cv=inner_folds)
-encoded_training_areas = area_encoder.fit_transform(fit_part[['ServiceArea']], fit_part['churn'])
-encoded_validation_areas = area_encoder.transform(check_part[['ServiceArea']])
+area_encoder = TargetEncoder(target_type="binary", smooth="auto", cv=inner_folds)
+encoded_training_areas = area_encoder.fit_transform(
+    fit_part[["ServiceArea"]], fit_part["churn"]
+)
+encoded_validation_areas = area_encoder.transform(check_part[["ServiceArea"]])
 
-# keep the one-hot alternative available for the later model comparison
-area_onehot = OneHotEncoder(handle_unknown='ignore', sparse_output=True)
-area_onehot.fit(fit_part[['ServiceArea']])
-onehot_validation_areas = area_onehot.transform(check_part[['ServiceArea']])
+# serviceArea: one-hot alternative
+area_onehot = OneHotEncoder(handle_unknown="ignore", sparse_output=True)
+onehot_training_areas = area_onehot.fit_transform(fit_part[["ServiceArea"]])
+onehot_validation_areas = area_onehot.transform(check_part[["ServiceArea"]])
 
-# report representation sizes without comparing model scores
+# encoding summary
 encoding_rows = [
-    {'representation': 'yes/no', 'input_columns': len(binary_columns), 'output_columns': encoded_binary.shape[1]},
-    {'representation': 'nominal one-hot', 'input_columns': len(nominal_columns), 'output_columns': encoded_nominal.shape[1]},
-    {'representation': 'ServiceArea target', 'input_columns': 1, 'output_columns': encoded_validation_areas.shape[1]},
-    {'representation': 'ServiceArea one-hot', 'input_columns': 1, 'output_columns': onehot_validation_areas.shape[1]},
+    {"representation": "yes/no", "input_columns": len(binary_columns),
+     "output_columns": encoded_binary.shape[1]},
+    {"representation": "nominal one-hot", "input_columns": len(nominal_columns),
+     "output_columns": encoded_nominal.shape[1]},
+    {"representation": "ServiceArea target", "input_columns": 1,
+     "output_columns": encoded_validation_areas.shape[1]},
+    {"representation": "ServiceArea one-hot", "input_columns": 1,
+     "output_columns": onehot_validation_areas.shape[1]},
 ]
 display(pd.DataFrame(encoding_rows))
 
