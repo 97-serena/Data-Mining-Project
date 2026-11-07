@@ -16,9 +16,10 @@ dataset/
 src/
   data.py              load_train(): the 80% training part used for all analysis
   preprocessing.py     shared preprocessing steps, reused by the pipelines and the modeling
+  features.py          EDA feature groups, engineered features and configurable group additions
 notebooks/
   data_exploration.py   shared analysis as a Jupytext notebook
-  preprocessing.py     preprocessing steps as a Jupytext notebook, one section per task
+  preprocessing.py     data preparation and pipeline validation as a Jupytext chapter
 requirements.in        direct dependencies
 requirements.txt       pinned shared dependencies
 .python-version        shared Python version
@@ -54,7 +55,7 @@ running when Jupytext was installed, restart it.
 ### Text notebooks
 
 - `notebooks/data_exploration.py`: analysis and agreed feature decisions
-- `notebooks/preprocessing.py`: the preprocessing tasks, one section per task with its owner
+- `notebooks/preprocessing.py`: data preparation, feature sets and pipeline validation
 
 These are Jupytext percent-format notebooks (`# %%` code cells and `# %% [markdown]`
 text cells). Their file headers select **only** `py:percent`: saving in JupyterLab keeps
@@ -66,6 +67,23 @@ Open the repository folder, select its `.venv` interpreter/kernel, open a text n
 and use **Run Cell** or **Run All Cells**. JupyterLab and VS Code use the same source files,
 environment and shared `src/` modules. The notebooks work when the kernel starts in the
 repository root or `notebooks/`; no shared helper changes are needed.
+
+### Reusing preprocessing in modeling
+
+`src.features.get_feature_spec(groups)` describes the raw inputs and eligible engineered
+features. `build_feature_configurations(baseline_groups, addition_order)` constructs nested
+group lists; the modeling notebook supplies the baseline and order explicitly.
+
+`src.preprocessing.make_preprocessor(groups, ...)` builds an unfitted pipeline. Its options
+cover linear/tree preparation, both age strategies, target/one-hot ServiceArea encoding,
+log/no-log numerical preparation for linear models, and the retention sensitivity set.
+Use it inside the model pipeline so each cross-validation fold fits its own preprocessing.
+Training data must pass through `fit_transform(X_fit, y_fit)` for internally cross-fitted
+target encoding; use `transform(X_check)` for held-out rows. The pinned scikit-learn version
+supports passing the reproducible inner-fold splitter directly to `TargetEncoder`.
+
+The preprocessing notebook runs transformation checks across the five training folds. It
+does not choose the group-addition order, compare model scores, or inspect test outcomes.
 
 ### Updating dependencies
 
@@ -85,13 +103,13 @@ shared packages stay pinned. Do not commit `.venv`, notebook outputs or local ex
 
 | Phase | Branch | Status |
 |---|---|---|
-| 1. Data exploration | `exploration` (archive), final version in `notebooks/data_exploration.py` | done |
-| 2. Agreed preprocessing | `preprocessing` → merged into `main` | **current** |
+| 1. Data exploration | `archive/exploration` (tag), final version in `notebooks/data_exploration.py` | done |
+| 2. Preprocessing | `preprocessing` | **current**, ready for review |
 | 3. Modelling and analysis | to be decided | later |
 
-**Phase 1:** the final exploration is `notebooks/data_exploration.py`. The individual notebooks and the original Colab version stay on the [`exploration` branch](https://github.com/97-serena/Data-Mining-Project/tree/exploration/eda) as an archive.
+**Phase 1:** the final exploration is `notebooks/data_exploration.py`. The individual notebooks and the original Colab version are preserved at the [`archive/exploration` tag](https://github.com/97-serena/Data-Mining-Project/tree/archive/exploration/eda).
 
-**Phase 2:** we work through the team's preprocessing task list in `notebooks/preprocessing.py` on `preprocessing`, and then merge the result into `main`. Implementation details follow section 8 of `notebooks/data_exploration.py`, except where `preprocessing.py` states a different default.
+**Phase 2:** `preprocessing` is the working branch for the completed preprocessing chapter, reusable transformations and validation checks. The earlier notebook and preprocessing work is consolidated here. `main` remains unchanged until the team reviews and agrees to finalize this stage.
 
 ## Ground rules
 

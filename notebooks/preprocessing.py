@@ -8,7 +8,7 @@
 #       format_version: '1.3'
 #       jupytext_version: 1.19.6
 #   kernelspec:
-#     display_name: Python 3
+#     display_name: Python 3 (ipykernel)
 #     language: python
 #     name: python3
 # ---
@@ -16,13 +16,13 @@
 # %% [markdown]
 # # Preprocessing
 #
-# The sections below follow the team's preprocessing task list, with the owner of each task.
-# Please work in your own section. Sections 1 and 2 contain code; sections 3 to 9 are still to
-# be implemented. Implementation details follow `data_exploration.py` section 8, except where a
-# section states a different default.
+# This chapter prepares the telecom customer data for churn modeling. Building on the
+# exploratory analysis, we handle missing and invalid values, encode categories, construct
+# engineered features, and define reusable feature sets and preprocessing pipelines.
 #
-# We use the repository's committed split and shared loader. The model baseline, group-addition
-# order, training and evaluation belong to the later modeling notebook.
+# We use the predefined training partition throughout. Transformations that learn from data
+# are fitted within training folds, preserving the independence of validation observations.
+# The final checks examine the resulting representations across five stratified folds.
 
 # %%
 # locate the repository from its root or the notebooks folder
@@ -47,13 +47,16 @@ import pandas as pd
 from IPython.display import display
 from src.data import load_train
 
+# show complete feature lists in the summary tables
+pd.set_option('display.max_colwidth', None)
+pd.set_option('display.width', 200)
+
 # %% [markdown]
-# ## 1. Prepare dataset and target variable
+# ## 1. Dataset and target variable
 #
-# **Owner:** Shiqi
-#
-# We verify the predefined customer assignments and the training partition. We do not recreate
-# the split or inspect test outcomes while preparing the workflow.
+# The predefined split separates customers into training and test partitions. We verify that
+# the customer identifiers are unique and the partitions do not overlap, then inspect the
+# training target distribution. The test outcomes remain reserved for final evaluation.
 
 # %%
 # load the predefined training partition
@@ -90,9 +93,7 @@ print('Training churn distribution:')
 print(training_churn_distribution)
 
 # %% [markdown]
-# ## 2. Handle potential data leakage
-#
-# **Owner:** Paola
+# ## 2. Leakage prevention
 #
 # We exclude the identifier and target from predictors. The three retention fields remain
 # outside the main set because their prediction-time availability is uncertain; we preserve
@@ -134,14 +135,12 @@ feature_summary = pd.DataFrame({
 display(feature_summary)
 
 # %% [markdown]
-# ## 3. Handle missing values and invalid entries
+# ## 3. Missing values and invalid entries
 #
-# **Owner:** Shiqi
-#
-# Standardize missing-value markers (`NA`, `empty`) and turn negative `CurrentEquipmentDays` into
-# missing. Use training-fold median imputation with per-column missingness indicators for numeric
-# features. Use `__MISSING__` for genuine nonbinary categorical missing values, and keep recorded
-# Unknown/Other values separate.
+# Negative `CurrentEquipmentDays` values are treated as missing because an equipment age
+# cannot be negative. Numeric gaps are filled with training-fold medians and accompanied by
+# per-column missingness indicators. Genuine nonbinary categorical gaps use `__MISSING__`,
+# preserving recorded Unknown/Other values as distinct categories.
 #
 # The code lives in `src/preprocessing.py` so the pipelines and the modeling notebook can reuse it:
 #
@@ -156,7 +155,7 @@ display(feature_summary)
 #
 # In the data, missing values are stored as `NA` or empty cells, which `read_csv` already reads as
 # missing; the marker `empty` does not occur. The missingness indicator for `PercChangeMinutes` is
-# named `ChangeMissing`, so section 6 should not create it again.
+# named `ChangeMissing` and belongs to the usage-change feature group.
 
 # %%
 # apply the fixed cleaning rules
@@ -226,20 +225,18 @@ indicator_table = pd.DataFrame({
 display(indicator_table)
 
 # %% [markdown]
-# ## 4. Handle special values and categories
+# ## 4. Special values and categories
 #
-# **Owner:** Shiqi
-#
-# Retain `IncomeGroup` = 0 as a separate category. Compare two options for zeros in
-# `AgeHH1`/`AgeHH2`: (a) keep the zeros and add `age1_zero`/`age2_zero`, or (b) replace them with
-# the training-fold median of nonzero ages, without indicators. If the results are tied, use (a).
-# Fill genuine missing ages with the training-fold median of nonzero ages and keep their
-# missingness indicators. Treat `HandsetPrice` as categorical.
+# `IncomeGroup` = 0 remains a separate category, and `HandsetPrice` is categorical.
+# Recorded zeros in `AgeHH1`/`AgeHH2` have two representations: (a) retain the zeros and add
+# `age1_zero`/`age2_zero`, or (b) replace them with training-fold medians of nonzero ages,
+# without zero indicators. Option (a) is the default and the tie-break choice for model
+# comparisons. Genuine missing ages use nonzero training-fold medians and retain their
+# missingness indicators in both representations.
 #
 # `clean_raw()` already stores `IncomeGroup` and `HandsetPrice` as categories, keeping
 # `IncomeGroup` = 0 and "Unknown" as their own values. `AgeImputer` handles the ages: its
-# `zero_strategy` switches between option (a) `"keep"` and option (b) `"median"`. The model
-# comparison of the two options runs in the final cross-validation (section 9).
+# `zero_strategy` switches between option (a) `"keep"` and option (b) `"median"`.
 
 # %%
 # check the categorical special values
@@ -293,65 +290,382 @@ column_table.index.name = 'output column'
 display(column_table)
 
 # %% [markdown]
-# ## 5. Encode categorical features
+# ## 5. Categorical encoding
 #
-# **Owner:** Yan-Ru
+# Yes/no features are encoded as 0/1. Other categorical features, including `IncomeGroup`
+# and `CreditRating`, use one-hot encoding.
 #
-# Encode yes/no features as 0/1 and apply one-hot encoding to other categorical features,
-# including `IncomeGroup` and `CreditRating`.
-#
-# Use smoothed target encoding with internal cross-fitting for `ServiceArea` by default, and
-# compare it against one-hot in the final cross-validation. This differs from
-# `data_exploration.py` section 8, which uses one-hot.
+# `ServiceArea` contains many distinct categories. Its default representation uses smoothed
+# target encoding with internal cross-fitting; one-hot encoding provides an alternative.
+# The encoder learns from training observations only.
 
 # %%
-# TODO (Yan-Ru)
+# encode yes/no values using only the training fold
+from src.preprocessing import BINARY_COLUMNS, BinaryEncoder
+from sklearn.preprocessing import OneHotEncoder, TargetEncoder
+
+binary_columns = []
+for column in main_features:
+    if column in BINARY_COLUMNS:
+        binary_columns.append(column)
+
+binary_encoder = BinaryEncoder().fit(fit_part[binary_columns])
+encoded_binary = binary_encoder.transform(check_part[binary_columns])
+assert encoded_binary.isna().sum().sum() == 0
+assert encoded_binary.isin([0, 1]).all().all()
+
+# one-hot encode the remaining categories, keeping ServiceArea separate
+nominal_columns = []
+for column in CATEGORICAL_COLUMNS:
+    if column != 'ServiceArea':
+        nominal_columns.append(column)
+
+nominal_encoder = OneHotEncoder(handle_unknown='ignore', sparse_output=True)
+nominal_encoder.fit(fit_part[nominal_columns])
+encoded_nominal = nominal_encoder.transform(check_part[nominal_columns])
+
+# cross-fit the service-area encoding within the training fold
+inner_folds = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+area_encoder = TargetEncoder(target_type='binary', smooth='auto', cv=inner_folds)
+encoded_training_areas = area_encoder.fit_transform(fit_part[['ServiceArea']], fit_part['churn'])
+encoded_validation_areas = area_encoder.transform(check_part[['ServiceArea']])
+
+# keep the one-hot alternative available for the later model comparison
+area_onehot = OneHotEncoder(handle_unknown='ignore', sparse_output=True)
+area_onehot.fit(fit_part[['ServiceArea']])
+onehot_validation_areas = area_onehot.transform(check_part[['ServiceArea']])
+
+# report representation sizes without comparing model scores
+encoding_rows = [
+    {'representation': 'yes/no', 'input_columns': len(binary_columns), 'output_columns': encoded_binary.shape[1]},
+    {'representation': 'nominal one-hot', 'input_columns': len(nominal_columns), 'output_columns': encoded_nominal.shape[1]},
+    {'representation': 'ServiceArea target', 'input_columns': 1, 'output_columns': encoded_validation_areas.shape[1]},
+    {'representation': 'ServiceArea one-hot', 'input_columns': 1, 'output_columns': onehot_validation_areas.shape[1]},
+]
+display(pd.DataFrame(encoding_rows))
 
 # %% [markdown]
-# ## 6. Implement feature engineering
+# ## 6. Engineered features
 #
-# **Owner:** Kaustubh
-#
-# Assign each engineered feature to its corresponding feature group and implement it. The seven
-# selected features are defined in `data_exploration.py` section 8.
+# The exploratory analysis selected seven engineered features. Four are calculated from
+# cleaned raw values before imputation; the remaining three are missingness or age-zero
+# indicators produced during imputation. Each feature retains its raw-parent dependencies.
 
 # %%
-# TODO (Kaustubh)
+# calculate the selected derivatives from cleaned, unimputed raw inputs
+from src.features import MAIN_FEATURE_GROUPS, EngineerFeatures
+
+all_groups = list(MAIN_FEATURE_GROUPS)
+feature_engineer = EngineerFeatures(groups=all_groups)
+engineered = feature_engineer.fit_transform(clean[main_features])
+calculated_features = feature_engineer.calculated_features_
+
+# verify the formulas without changing the raw predictors
+pd.testing.assert_frame_equal(engineered[main_features], clean[main_features])
+assert engineered['inactive_subs'].equals(
+    clean['UniqueSubs'].astype(float) - clean['ActiveSubs'].astype(float)
+)
+assert engineered['ContractWindow'].dropna().isin([0, 1]).all()
+undefined_change = clean['MonthlyMinutes'].isna() | (clean['MonthlyMinutes'] <= 0)
+assert engineered.loc[undefined_change, 'RelChangeMinutes'].isna().all()
+
+# inspect the four calculated features; the imputers create the other three flags
+engineered_rows = []
+for column in calculated_features:
+    engineered_rows.append({
+        'feature': column,
+        'missing_before_imputation': int(engineered[column].isna().sum()),
+        'minimum': engineered[column].min(),
+        'maximum': engineered[column].max(),
+    })
+display(pd.DataFrame(engineered_rows))
 
 # %% [markdown]
-# ## 7. Prepare feature sets for modeling
+# ## 7. Feature sets for modeling
 #
-# **Owner:** Yannis
-#
-# Implement the feature-group definitions established during EDA, including the planned
-# engineered features. Define the full feature set and the configurations that add feature groups
-# incrementally. A derivative is available only when all of its parent groups are present.
+# The six feature groups preserve the information categories established during exploration.
+# The full representation combines all groups and their eligible engineered features. Group
+# combinations also support incremental comparisons: a derivative is available only when all
+# of its parent groups are present.
 
 # %%
-# TODO (Yannis)
+# import the shared definitions and the helper used later by modeling
+from src.features import (
+    ENGINEERED_FEATURES,
+    RETENTION_COLUMNS,
+    build_feature_configurations,
+    get_feature_spec,
+)
 
 # %% [markdown]
-# ## 8. Implement numerical transformations
+# ### 7.1 Raw feature groups
 #
-# **Owner:** All
-#
-# Implement training-fold scaling of continuous numerical columns for Logistic Regression. Keep
-# numerical features unscaled for tree-based models. Do not delete rows or clip values.
-#
-# For Logistic Regression, use `log1p` on highly skewed nonnegative columns by default, and compare
-# it against no log transformation in the final cross-validation. This differs from
-# `data_exploration.py` section 8, which applies no log transformation.
+# We reuse the six EDA groups. The three retention fields stay outside the main
+# representation and are included only in the separate sensitivity option.
 
 # %%
-# TODO (All)
+# show the group memberships without assigning an evaluation order
+group_rows = []
+group_feature_sets = {}
+for group_name, group_columns in MAIN_FEATURE_GROUPS.items():
+    group_feature_sets[group_name] = get_feature_spec([group_name])
+    group_rows.append({
+        'group': group_name,
+        'raw_predictors': len(group_columns),
+        'features': ', '.join(group_columns),
+    })
+display(pd.DataFrame(group_rows))
 
 # %% [markdown]
-# ## 9. Build and validate preprocessing pipelines
+# ### 7.2 Engineered features and parent groups
 #
-# **Owner:** All
-#
-# Combine the transformations into reproducible pipelines. Ensure imputation, encoding, scaling
-# and other learned transformations are fitted only on training folds during cross-validation.
+# A derivative enters only when all of its parent groups are present. Missingness
+# indicators follow the same rule. `ChangeMissing` is produced by the numeric imputer
+# when that training fold has missing minutes-change values. The age-zero flags are
+# produced only with the keep-zeros option. These columns are not created twice.
 
 # %%
-# TODO (All)
+# record the source of each engineered feature and its dependencies
+engineered_group_rows = []
+for feature, details in ENGINEERED_FEATURES.items():
+    engineered_group_rows.append({
+        'feature': feature,
+        'group': details['group'],
+        'raw_parents': ', '.join(details['parents']),
+        'required_groups': ', '.join(details['parent_groups']),
+        'created_by': details['created_by'],
+    })
+display(pd.DataFrame(engineered_group_rows))
+
+# %% [markdown]
+# ### 7.3 Full feature sets and incremental configurations
+#
+# The main set contains 53 raw predictors; the retention sensitivity set contains 56.
+# The seven selected engineered features are eligible under the keep-zeros option.
+# The median-age option omits the two age-zero flags. Actual output columns also
+# depend on fitted missingness indicators and categorical encoding.
+#
+# `build_feature_configurations(baseline_groups, addition_order)` constructs nested group
+# lists ending in the full set. Each list can be passed to `get_feature_spec` and
+# `make_preprocessor`. The baseline and addition order are supplied for each evaluation;
+# feature preparation itself imposes no ranking on the groups.
+
+# %%
+# define the complete reference sets without fitting any transformation
+full_feature_set = get_feature_spec(all_groups)
+retention_feature_set = get_feature_spec(all_groups, include_retention=True)
+median_age_feature_set = get_feature_spec(all_groups, age_strategy='median')
+feature_sets = {
+    'full': full_feature_set,
+    'with_retention': retention_feature_set,
+}
+
+# verify coverage, exclusions and the optional age flags
+assert set(full_feature_set['raw_features']) == set(main_features)
+assert set(retention_feature_set['raw_features']) == set(with_retention_features)
+assert len(full_feature_set['raw_features']) == 53
+assert len(retention_feature_set['raw_features']) == 56
+assert len(full_feature_set['engineered_features']) == 7
+assert len(median_age_feature_set['engineered_features']) == 5
+assert set(RETENTION_COLUMNS).isdisjoint(full_feature_set['raw_features'])
+
+feature_set_rows = []
+for name, specification in feature_sets.items():
+    names = specification['raw_features'] + specification['engineered_features']
+    assert len(names) == len(set(names))
+    assert set(['CustomerID', 'Churn', 'churn', 'split', 'fold']).isdisjoint(names)
+    feature_set_rows.append({
+        'feature_set': name,
+        'raw_predictors': len(specification['raw_features']),
+        'planned_engineered_features': ', '.join(specification['engineered_features']),
+    })
+display(pd.DataFrame(feature_set_rows))
+
+# check that cross-group features require both groups
+billing_only = get_feature_spec(['account_billing'])
+billing_and_usage = get_feature_spec(['account_billing', 'usage'])
+change_only = get_feature_spec(['usage_change_retention'])
+change_and_usage = get_feature_spec(['usage_change_retention', 'usage'])
+assert 'RevenuePerMinute' not in billing_only['engineered_features']
+assert 'RevenuePerMinute' in billing_and_usage['engineered_features']
+assert 'RelChangeMinutes' not in change_only['engineered_features']
+assert 'RelChangeMinutes' in change_and_usage['engineered_features']
+
+# %% [markdown]
+# ## 8. Numerical transformations
+#
+# Logistic Regression uses training-fold scaling of continuous numerical columns, while
+# tree-based models receive unscaled numerical values. Extreme observations are retained
+# without clipping.
+#
+# For Logistic Regression, the default representation applies `log1p` to eligible, highly
+# skewed nonnegative measurements. A second representation omits the log transformation,
+# allowing its effect to be assessed during model evaluation.
+
+# %%
+# fit numerical alternatives using the same training and validation fold
+from src.preprocessing import NumericPreparation, indicator_name
+
+numeric_feature_columns = []
+for column in engineered.columns:
+    if pd.api.types.is_numeric_dtype(engineered[column]) and column not in AGE_ZERO_FLAGS:
+        numeric_feature_columns.append(column)
+
+numeric_fit = engineered.iloc[fit_rows][numeric_feature_columns]
+numeric_check = engineered.iloc[check_rows][numeric_feature_columns]
+numerical_options = [
+    ('linear with log1p', True, True),
+    ('linear without log1p', True, False),
+    ('tree', False, False),
+]
+numerical_rows = []
+for label, scale, use_log in numerical_options:
+    preparation = NumericPreparation(scale=scale, log_transform=use_log)
+    preparation.fit(numeric_fit)
+    prepared = preparation.transform(numeric_check)
+    assert prepared.isna().sum().sum() == 0
+    assert prepared['ContractWindow'].isin([0, 1]).all()
+    for column in preparation.imputer_.indicator_columns_:
+        assert prepared[indicator_name(column)].isin([0, 1]).all()
+    numerical_rows.append({
+        'option': label,
+        'output_columns': prepared.shape[1],
+        'logged_columns': ', '.join(preparation.log_columns_) or 'none',
+    })
+display(pd.DataFrame(numerical_rows))
+
+# %% [markdown]
+# Log eligibility is learned within each training fold: an eligible nonnegative
+# measurement must have skewness greater than 1. Signed billing amounts, changes
+# and ratios are never logged. Only continuous values are scaled; binary features
+# and missingness indicators keep their 0/1 values. No values are clipped.
+
+# %% [markdown]
+# ## 9. Preprocessing pipelines and validation
+#
+# Reusable pipelines combine feature selection, cleaning, feature engineering and numerical
+# preparation. Imputation, encoding, scaling and other learned transformations are fitted
+# only on training folds during cross-validation.
+
+# %%
+# create reusable, unfitted pipelines for the complete main and sensitivity sets
+from src.preprocessing import make_preprocessor
+
+linear_preprocessor = make_preprocessor(all_groups, model_kind='linear')
+tree_preprocessor = make_preprocessor(all_groups, model_kind='tree')
+retention_preprocessor = make_preprocessor(all_groups, include_retention=True)
+
+# %% [markdown]
+# ### 9.1 Training-fold validation
+#
+# The checks below run each preprocessing alternative through the same five training
+# folds. They verify finite values, row counts, feature names and group membership.
+# They also exercise each group on its own and the separate retention representation.
+# These are transformation checks, not model-score comparisons or an addition schedule.
+#
+# Training uses `fit_transform(X_fit, y_fit)` so ServiceArea target encoding is
+# cross-fitted internally. Validation uses only `transform(X_check)`. When modeling,
+# place this preprocessor inside the model pipeline so each cross-validation fold fits
+# its own transformations. Do not export one globally fitted matrix for model CV.
+
+# %%
+from scipy import sparse
+import numpy as np
+
+# enumerate alternatives without choosing them by validation outcomes
+validation_options = []
+for model_kind in ['linear', 'tree']:
+    log_options = [True, False] if model_kind == 'linear' else [False]
+    for age_strategy in ['keep', 'median']:
+        for area_encoding in ['target', 'onehot']:
+            for use_log in log_options:
+                validation_options.append({
+                    'name': f'full / {model_kind} / {age_strategy} / {area_encoding} / log={use_log}',
+                    'groups': all_groups,
+                    'model_kind': model_kind,
+                    'age_strategy': age_strategy,
+                    'service_area_encoding': area_encoding,
+                    'log_transform': use_log,
+                    'include_retention': False,
+                })
+
+# verify that individual groups and the retention option work independently
+for model_kind in ['linear', 'tree']:
+    for group_name in all_groups:
+        validation_options.append({
+            'name': f'{group_name} only / {model_kind}',
+            'groups': [group_name],
+            'model_kind': model_kind,
+        })
+    validation_options.append({
+        'name': f'with retention / {model_kind}',
+        'groups': all_groups,
+        'model_kind': model_kind,
+        'include_retention': True,
+    })
+
+# keep targets separate; the pipeline explicitly selects only its allowed raw inputs
+X_train = train.drop(columns=['Churn', 'churn'])
+y_train = train['churn']
+shared_folds = list(folds.split(X_train, y_train))
+validation_rows = []
+
+for option in validation_options:
+    settings = option.copy()
+    option_name = settings.pop('name')
+    for fold_number, (training_rows, validation_rows_in_fold) in enumerate(shared_folds, start=1):
+        preprocessor = make_preprocessor(**settings)
+        fit_values = preprocessor.fit_transform(
+            X_train.iloc[training_rows], y_train.iloc[training_rows],
+        )
+        check_values = preprocessor.transform(X_train.iloc[validation_rows_in_fold])
+        output_names = list(preprocessor.get_feature_names_out())
+
+        # training and validation use the same fitted schema within each fold
+        assert fit_values.shape == (len(training_rows), len(output_names))
+        assert check_values.shape == (len(validation_rows_in_fold), len(output_names))
+        assert len(output_names) == len(set(output_names))
+        for values in [fit_values, check_values]:
+            entries = values.data if sparse.issparse(values) else values
+            assert np.isfinite(entries).all()
+
+        # raw selection excludes outcomes, identifiers and unintended groups
+        expected = get_feature_spec(settings['groups'], settings.get('include_retention', False))
+        selected = list(preprocessor.named_steps['select'].get_feature_names_out())
+        assert selected == expected['raw_features']
+        assert set(['CustomerID', 'Churn', 'churn', 'split', 'fold']).isdisjoint(output_names)
+        if not settings.get('include_retention', False):
+            assert set(RETENTION_COLUMNS).isdisjoint(output_names)
+
+        # no flag is generated twice, and median-age handling omits zero flags
+        assert output_names.count('ChangeMissing') <= 1
+        if settings.get('age_strategy', 'keep') == 'median':
+            assert set(AGE_ZERO_FLAGS.values()).isdisjoint(output_names)
+
+        validation_rows.append({
+            'configuration': option_name,
+            'fold': fold_number,
+            'training_rows': fit_values.shape[0],
+            'validation_rows': check_values.shape[0],
+            'output_columns': len(output_names),
+            'passed': True,
+        })
+
+# summarize all fold checks; encoded column counts may differ between fitted folds
+pipeline_checks = pd.DataFrame(validation_rows)
+validation_summary = pipeline_checks.groupby('configuration', sort=False).agg(
+    folds_checked=('fold', 'count'),
+    minimum_columns=('output_columns', 'min'),
+    maximum_columns=('output_columns', 'max'),
+    all_passed=('passed', 'all'),
+)
+assert validation_summary['folds_checked'].eq(5).all()
+assert validation_summary['all_passed'].all()
+display(validation_summary)
+print('Passed preprocessing checks:', len(pipeline_checks))
+
+# %% [markdown]
+# `make_preprocessor` provides the validated transformations for any selected combination
+# of feature groups. Combined with an estimator, the pipeline fits preprocessing separately
+# within each training fold and applies the learned transformations to held-out observations.
+# The test partition remains reserved for final model evaluation.
