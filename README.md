@@ -101,15 +101,26 @@ shared packages stay pinned. Do not commit `.venv`, notebook outputs or local ex
 
 ## Project phases
 
-| Phase | Branch | Status |
-|---|---|---|
-| 1. Data exploration | `archive/exploration` (tag), final version in `notebooks/data_exploration.py` | done |
-| 2. Preprocessing | `preprocessing` | **current**, ready for review |
-| 3. Modelling and analysis | to be decided | later |
+| Phase | Branch | Main files | Status |
+|---|---|---|---|
+| 1. Data exploration | `exploration` (archive) | `notebooks/data_exploration.py` | done |
+| 2. Preprocessing | `preprocessing` | `notebooks/preprocessing.py`, `src/preprocessing.py`, `src/features.py` | done, waiting for team review before merging into `main` |
+| 3. Modelling and analysis | `modelling` (based on `preprocessing`) | to be added | **current** |
 
-**Phase 1:** the final exploration is `notebooks/data_exploration.py`. The individual notebooks and the original Colab version are preserved at the [`archive/exploration` tag](https://github.com/97-serena/Data-Mining-Project/tree/archive/exploration/eda).
+`main` only receives a phase after the team has reviewed and agreed on it.
 
-**Phase 2:** `preprocessing` is the working branch for the completed preprocessing chapter, reusable transformations and validation checks. The earlier notebook and preprocessing work is consolidated here. `main` remains unchanged until the team reviews and agrees to finalize this stage.
+**Phase 1:** the final exploration is `notebooks/data_exploration.py`. The individual notebooks and the original Colab version are kept on the [`exploration` branch](https://github.com/97-serena/Data-Mining-Project/tree/exploration/eda) as an archive.
+
+**Phase 2:** the preprocessing chapter, reusable transformations and validation checks are complete on `preprocessing`. If a preprocessing problem turns up during modelling, fix it on `preprocessing` and then merge it into `modelling`, so both branches keep the same preprocessing code.
+
+**Phase 3:** we train and compare the models on `modelling`, following the team's model task list:
+
+- baselines: a Dummy Classifier and a fixed tenure rule, neither learned from the data
+- comparisons of the preprocessing options and the retention sensitivity set, settled before the model comparison
+- candidate models: Logistic Regression, Naive Bayes, Decision Tree, Random Forest and Gradient Boosting
+- the incremental information-group comparison and the error analysis by tenure × spending segment
+
+All models and configurations use the same stratified five-fold splits (`StratifiedKFold(5, shuffle=True, random_state=42)`) and build their preprocessing with `make_preprocessor(...)`, so each fold fits its own preprocessing. Average Precision is the primary metric. The test set is used only once, for the final evaluation.
 
 ## Ground rules
 
