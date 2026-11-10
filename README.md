@@ -126,5 +126,5 @@ All models and configurations use the same stratified five-fold splits (`Stratif
 
 - Use only the training split (`load_train()`); never look at the test split.
 - Only edit your own files. Shared code lives in `src/`; tell the team before changing it.
-- Clear notebook outputs before committing.
+- Commit only the Jupytext `.py` notebooks. Do not commit `.ipynb` exports or their outputs; rerun the cells to see results.
 - Use `random_state=42` everywhere.
