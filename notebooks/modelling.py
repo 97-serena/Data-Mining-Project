@@ -18,10 +18,10 @@
 #
 # We set up the shared evaluation procedure and establish three simple reference scores:
 # deterministic and random dummy classifiers, and a fixed tenure rule. The preprocessing
-# and retention sections prepare comparisons using Shiqi's Logistic Regression implementation.
+# and retention sections compare Logistic Regression on the shared folds.
 #
-# Separate sections below provide space for the team's model code, explanations and
-# interpretation of results. At present, only the three baselines are evaluated.
+# Separate sections below provide space for the team's remaining model code,
+# explanations and interpretation of results.
 
 # %% [markdown]
 # ## 1. Shared imports
@@ -32,6 +32,7 @@
 # %%
 from pathlib import Path
 import sys
+import warnings
 
 project_root = Path.cwd()
 if not (project_root / 'src' / 'data.py').is_file():
@@ -44,10 +45,17 @@ import numpy as np
 import pandas as pd
 from IPython.display import display
 from sklearn.dummy import DummyClassifier
+from sklearn.exceptions import ConvergenceWarning
+from sklearn.linear_model import LogisticRegression
 
 from src.baselines import TenureRule
-from src.data import load_train
-from src.evaluation import evaluate_classifier, make_shared_folds, summarize_scores
+from src.data import RANDOM_STATE, load_train
+from src.evaluation import (
+    evaluate_classifier,
+    make_model_pipeline,
+    make_shared_folds,
+    summarize_scores,
+)
 from src.features import (
     MAIN_FEATURE_GROUPS,
     RETENTION_COLUMNS,
@@ -250,26 +258,31 @@ display(baseline_predictions.head())
 # %% [markdown]
 # ## 9. Preprocessing comparisons
 #
-# All switches already exist in make_preprocessor. The next experiment will compare
-# eight combinations on the full main information set, using the shared folds and
-# Shiqi's fixed Logistic Regression implementation. Regularisation penalises overly
-# large model weights; its settings must stay the same across these comparisons so
-# we measure preprocessing changes rather than model-setting changes.
+# We compare all eight combinations on the full main information set, using the same
+# five folds and the same Logistic Regression settings. The team's model implementation
+# is not available yet, so this comparison uses a fixed reference model: lbfgs, L2
+# regularisation with C=1, and at most 2000 iterations. A convergence warning stops
+# the run rather than allowing an unfinished fit into the comparison.
 #
-# - Age keep: preserve recorded zeros and their two zero flags. Age median: replace
-#   zeros with training-fold positive-age medians and omit those flags. Both options
-#   still impute genuine missing ages from the training fold.
-# - One-hot ServiceArea: a separate 0/1 column for each area. Target encoding: a compact
-#   churn-rate estimate stabilised for rare areas, using the existing cross-fitting.
-# - log1p: log(1 + x) compresses large nonnegative measurements. The existing pipeline
-#   chooses eligible skewed columns inside each fold; signed values are not logged.
+# Age keep retains zeros and adds zero flags; age median replaces zeros with the
+# training-fold positive-age median. ServiceArea uses either target or one-hot encoding.
+# The log option applies log1p to eligible skewed columns, chosen within each fold.
+# All learned preprocessing is fitted within the training portion of each fold.
 #
-# We list the configurations now without fitting Logistic Regression or choosing a
-# winner. After evaluation, inspect mean AP and fold-by-fold differences, prefer a
-# simpler representation when gains are small and inconsistent, and record the chosen
-# age, area and log options here. Freeze those choices before information-group scoring.
+# We select by mean fold AP. Configurations within 0.001 AP of the best are treated as
+# practically similar; among them we prefer one-hot over target encoding, no log over
+# log, then median over keep for age zeros. This tolerance is a practical choice, not a
+# statistical test. The fold comparisons below show how consistent the differences are.
 
 # %%
+all_groups = list(MAIN_FEATURE_GROUPS)
+logistic_model = LogisticRegression(
+    C=1.0,
+    solver='lbfgs',
+    max_iter=2000,
+    random_state=RANDOM_STATE,
+)
+
 preprocessing_options = []
 for age_strategy in ['keep', 'median']:
     for area_encoding in ['target', 'onehot']:
@@ -278,54 +291,187 @@ for age_strategy in ['keep', 'median']:
                 'age_strategy': age_strategy,
                 'service_area_encoding': area_encoding,
                 'log_transform': use_log,
-                'include_retention': False,
             })
 
-assert len(preprocessing_options) == 8
-display(pd.DataFrame(preprocessing_options))
+preprocessing_results = []
+preprocessing_predictions = {}
+for options in preprocessing_options:
+    name = (
+        f"age={options['age_strategy']}, "
+        f"area={options['service_area_encoding']}, "
+        f"log={options['log_transform']}"
+    )
+    pipeline = make_model_pipeline(
+        logistic_model,
+        all_groups,
+        model_kind='linear',
+        include_retention=False,
+        **options,
+    )
+    with warnings.catch_warnings():
+        warnings.simplefilter('error', ConvergenceWarning)
+        fold_results, predictions = evaluate_classifier(
+            pipeline, X_train, y_train, shared_folds, name=name,
+        )
+    for option, value in options.items():
+        fold_results[option] = value
+    preprocessing_results.append(fold_results)
+    preprocessing_predictions[name] = predictions
+
+preprocessing_fold_results = pd.concat(preprocessing_results, ignore_index=True)
+preprocessing_summary = summarize_scores(preprocessing_fold_results)
+preprocessing_summary = preprocessing_summary.sort_values('mean_ap', ascending=False)
+preprocessing_fold_ap = preprocessing_fold_results.pivot(
+    index='model', columns='fold', values='average_precision',
+)
+display(preprocessing_summary.round(4))
+display(preprocessing_fold_ap.round(4))
+
+# %% [markdown]
+# Each difference below compares two choices on the same validation fold, holding the
+# other two preprocessing options fixed. A positive value favors the second choice.
+
+# %%
+def compare_preprocessing_options(option, first, second):
+    """compare one preprocessing choice while holding the others and fold fixed"""
+    option_columns = ['age_strategy', 'service_area_encoding', 'log_transform']
+    matching_columns = ['fold']
+    for column in option_columns:
+        if column != option:
+            matching_columns.append(column)
+
+    first_rows = preprocessing_fold_results[
+        preprocessing_fold_results[option] == first
+    ]
+    second_rows = preprocessing_fold_results[
+        preprocessing_fold_results[option] == second
+    ]
+    comparison = first_rows.merge(
+        second_rows,
+        on=matching_columns,
+        suffixes=('_first', '_second'),
+        validate='one_to_one',
+    )
+    comparison['ap_difference'] = (
+        comparison['average_precision_second'] - comparison['average_precision_first']
+    )
+    return comparison[matching_columns + ['ap_difference']]
+
+
+age_differences = compare_preprocessing_options('age_strategy', 'keep', 'median')
+area_differences = compare_preprocessing_options('service_area_encoding', 'target', 'onehot')
+log_differences = compare_preprocessing_options('log_transform', False, True)
+print('Age: median minus keep')
+display(age_differences.round(4))
+print('ServiceArea: one-hot minus target')
+display(area_differences.round(4))
+print('Log: log1p minus no log')
+display(log_differences.round(4))
+
+# %% [markdown]
+# The recorded choice is median age, target encoding and log1p. On the committed
+# training split, its mean AP was 0.4269 versus 0.4270 for keep/target/log1p. These
+# were within the 0.001 tolerance, so the median option was preferred. One-hot and
+# no-log configurations were outside the tolerance. These scores were also used to
+# choose preprocessing, so they are not an independent estimate of final performance.
+# The test partition remains reserved for the final evaluation.
+#
+# The choice is a fixed literal for downstream comparisons, not a value silently
+# reselected on every notebook run. Revisit it deliberately if the data or model changes.
+
+# %%
+selected_preprocessing = {
+    'age_strategy': 'median',
+    'service_area_encoding': 'target',
+    'log_transform': True,
+}
+selected_name = (
+    f"age={selected_preprocessing['age_strategy']}, "
+    f"area={selected_preprocessing['service_area_encoding']}, "
+    f"log={selected_preprocessing['log_transform']}"
+)
+selection_tolerance = 0.001
+best_mean_ap = preprocessing_summary['mean_ap'].max()
+selected_mean_ap = preprocessing_summary.loc[selected_name, 'mean_ap']
+if best_mean_ap - selected_mean_ap > selection_tolerance:
+    print('The recorded choice is now outside the 0.001 AP tolerance; review it before continuing')
+
+display(pd.DataFrame([selected_preprocessing]))
 
 # %% [markdown]
 # ## 10. Retention sensitivity
 #
-# A sensitivity analysis asks whether results change under an alternative input set.
-# After fixing preprocessing, repeat the Logistic Regression evaluation with the three
-# original retention fields added together. Use the same full main groups, model settings
-# and folds; only include_retention changes. Report AP with and without retention and
-# the per-fold differences. Do not retune preprocessing separately for this comparison.
+# We keep the chosen preprocessing, model settings and folds fixed, and add all three
+# retention fields together. The main result comes from the matching run above; only
+# the retention option changes in the new run. Paired AP differences compare the same
+# validation fold, with positive values favoring the retention input set.
 #
-# Keep retention outside the main information-group comparison because its availability
-# at prediction time is uncertain. An AP gain would not establish leakage, availability
-# before prediction, or a causal effect of retention offers on churn.
-#
-# The following table checks the two raw input sets. It does not evaluate a model.
+# Retention stays outside the main information-group comparison because its availability
+# at prediction time is uncertain. An AP gain does not establish availability, leakage,
+# or a causal effect of retention offers on churn.
 
 # %%
-all_groups = list(MAIN_FEATURE_GROUPS)
 main_spec = get_feature_spec(all_groups)
 retention_spec = get_feature_spec(all_groups, include_retention=True)
 assert len(main_spec['raw_features']) == 53
 assert len(retention_spec['raw_features']) == 56
 assert set(retention_spec['raw_features']) - set(main_spec['raw_features']) == set(RETENTION_COLUMNS)
 
-display(pd.DataFrame({
-    'representation': ['main', 'retention sensitivity'],
-    'raw_predictors': [53, 56],
-    'include_retention': [False, True],
-}))
+main_results = preprocessing_fold_results[
+    preprocessing_fold_results['model'] == selected_name
+].copy()
+retention_pipeline = make_model_pipeline(
+    logistic_model,
+    all_groups,
+    model_kind='linear',
+    include_retention=True,
+    **selected_preprocessing,
+)
+with warnings.catch_warnings():
+    warnings.simplefilter('error', ConvergenceWarning)
+    retention_results, retention_predictions = evaluate_classifier(
+        retention_pipeline, X_train, y_train, shared_folds, name='With retention',
+    )
+
+retention_comparison = main_results[['fold', 'average_precision']].merge(
+    retention_results[['fold', 'average_precision']],
+    on='fold',
+    suffixes=('_main', '_retention'),
+    validate='one_to_one',
+)
+retention_comparison['ap_difference'] = (
+    retention_comparison['average_precision_retention']
+    - retention_comparison['average_precision_main']
+)
+display(retention_comparison.round(4))
+print(f"Mean AP without retention: {retention_comparison['average_precision_main'].mean():.4f}")
+print(f"Mean AP with retention: {retention_comparison['average_precision_retention'].mean():.4f}")
+print(f"Mean paired AP difference: {retention_comparison['ap_difference'].mean():+.4f}")
+
+# %% [markdown]
+# On the committed training split, mean AP increased from 0.4269 to 0.4313, a paired
+# gain of 0.0045. Four folds improved and one declined, so the gain is not consistent
+# across every fold. This is a training-data sensitivity check, not a final test result.
 
 # %% [markdown]
 # ## 11. Logistic Regression (Shiqi)
 #
-# Fit an initial regularised Logistic Regression model using the selected preprocessing
-# and the shared evaluation procedure. Report AP on the same five folds as the baselines.
-#
-# **Explanation:** Add the model settings and reasons for choosing them here.
+# The fixed reference model and selected preprocessing were evaluated above. Reuse the
+# existing fold scores and out-of-fold predictions instead of fitting them again. The
+# team's eventual model settings may differ and should be recorded when available.
 
 # %%
-# Add the Logistic Regression pipeline and shared-fold evaluation here.
+logistic_results = main_results.copy()
+logistic_predictions = preprocessing_predictions[selected_name].copy()
+logistic_comparison = pd.concat(
+    [baseline_fold_results, logistic_results],
+    ignore_index=True,
+)
+display(summarize_scores(logistic_comparison).round(4))
 
 # %% [markdown]
-# **Results and interpretation:** Add the AP summary and comparison with the baselines here.
+# The Logistic Regression score above uses the same folds that selected preprocessing;
+# compare it with the baselines as a development result, not an independent final score.
 
 # %% [markdown]
 # ## 12. Naive Bayes (Shiqi)
