@@ -1,8 +1,7 @@
-"""Reusable preprocessing for the churn models.
+"""reusable preprocessing for the churn models
 
-Select raw groups, clean fixed invalid values, calculate derivatives, then fit
-imputation, encoding and numerical transformations on training folds only.
-Call fit_transform(X_train, y_train) for internally cross-fitted target encoding.
+select and clean raw inputs, calculate features, and fit the remaining steps on training folds
+use fit_transform with training predictors and labels for cross-fitted target encoding
 """
 import numpy as np
 import pandas as pd
@@ -17,46 +16,84 @@ from src.features import EngineerFeatures, get_feature_spec
 
 MISSING_CATEGORY = "__MISSING__"
 CATEGORICAL_COLUMNS = [
-    "ServiceArea", "HandsetPrice", "IncomeGroup", "CreditRating",
-    "PrizmCode", "Occupation", "MaritalStatus", "Homeownership",
+    "ServiceArea",
+    "HandsetPrice",
+    "IncomeGroup",
+    "CreditRating",
+    "PrizmCode",
+    "Occupation",
+    "MaritalStatus",
+    "Homeownership",
 ]
 AGE_ZERO_FLAGS = {"AgeHH1": "age1_zero", "AgeHH2": "age2_zero"}
 INDICATOR_NAMES = {"PercChangeMinutes": "ChangeMissing"}
 MISSING_MARKERS = ["NA", "", "empty"]
 BINARY_COLUMNS = [
-    "ChildrenInHH", "NewCellphoneUser", "NotNewCellphoneUser",
-    "HandsetRefurbished", "HandsetWebCapable", "TruckOwner", "RVOwner",
-    "OwnsMotorcycle", "OwnsComputer", "HasCreditCard", "BuysViaMailOrder",
-    "RespondsToMailOffers", "OptOutMailings", "NonUSTravel", "MadeCallToRetentionTeam",
+    "ChildrenInHH",
+    "NewCellphoneUser",
+    "NotNewCellphoneUser",
+    "HandsetRefurbished",
+    "HandsetWebCapable",
+    "TruckOwner",
+    "RVOwner",
+    "OwnsMotorcycle",
+    "OwnsComputer",
+    "HasCreditCard",
+    "BuysViaMailOrder",
+    "RespondsToMailOffers",
+    "OptOutMailings",
+    "NonUSTravel",
+    "MadeCallToRetentionTeam",
 ]
 
-# Billing amounts, changes and ratios can be signed and never receive log1p.
-# Only these nonnegative measurements can be selected by training-fold skewness.
+# billing amounts, changes and ratios can be signed and never receive log1p
+# only these nonnegative measurements can be selected by training-fold skewness
 LOG_CANDIDATES = [
-    "OverageMinutes", "MonthsInService", "CurrentEquipmentDays", "Handsets",
-    "HandsetModels", "UniqueSubs", "ActiveSubs", "AdjustmentsToCreditRating",
-    "MonthlyMinutes", "DirectorAssistedCalls", "RoamingCalls", "ThreewayCalls",
-    "ReceivedCalls", "OutboundCalls", "InboundCalls", "PeakCallsInOut",
-    "OffPeakCallsInOut", "CallForwardingCalls", "CallWaitingCalls",
-    "DroppedCalls", "BlockedCalls", "UnansweredCalls", "DroppedBlockedCalls",
-    "CustomerCareCalls", "ReferralsMadeBySubscriber", "RetentionCalls",
-    "RetentionOffersAccepted", "inactive_subs",
+    "OverageMinutes",
+    "MonthsInService",
+    "CurrentEquipmentDays",
+    "Handsets",
+    "HandsetModels",
+    "UniqueSubs",
+    "ActiveSubs",
+    "AdjustmentsToCreditRating",
+    "MonthlyMinutes",
+    "DirectorAssistedCalls",
+    "RoamingCalls",
+    "ThreewayCalls",
+    "ReceivedCalls",
+    "OutboundCalls",
+    "InboundCalls",
+    "PeakCallsInOut",
+    "OffPeakCallsInOut",
+    "CallForwardingCalls",
+    "CallWaitingCalls",
+    "DroppedCalls",
+    "BlockedCalls",
+    "UnansweredCalls",
+    "DroppedBlockedCalls",
+    "CustomerCareCalls",
+    "ReferralsMadeBySubscriber",
+    "RetentionCalls",
+    "RetentionOffersAccepted",
+    "inactive_subs",
 ]
 
 
 def indicator_name(column):
-    """Return the agreed name of a numeric missingness indicator."""
+    """return the name of a numeric missingness indicator"""
     return INDICATOR_NAMES.get(column, f"{column}_missing")
 
 
 def clean_raw(df):
-    """Apply fixed cleaning to the available columns and return a copy.
+    """clean the available columns and return a copy
 
-The loader parses NA and empty cells. Reject any unparsed marker; preserve
-recorded Unknown/Other states. No parameters are learned here.
-"""
+    reject unparsed missing markers while keeping recorded unknown and other categories
+    this step does not learn statistics from the data
+    """
     out = df.copy()
-    for column in out.select_dtypes(exclude="number").columns:
+    non_numeric = out.select_dtypes(exclude="number")
+    for column in non_numeric.columns:
         leftover = out[column].isin(MISSING_MARKERS)
         if leftover.any():
             raise ValueError(f"{column} contains {int(leftover.sum())} unparsed missing markers")
@@ -71,8 +108,8 @@ recorded Unknown/Other states. No parameters are learned here.
         is_missing = out[column].isna()
         values = out[column].astype(str)
         if column == "IncomeGroup":
-            # A missing numeric code can change the input dtype to float.
-            # Keep observed integer codes consistent between training and validation.
+            # a missing numeric code can change the input dtype to float
+            # keep observed integer codes consistent between training and validation
             values = values.str.replace(r"^(\d+)\.0$", r"\1", regex=True)
         values[is_missing] = MISSING_CATEGORY
         out[column] = values.astype(object)
@@ -80,7 +117,7 @@ recorded Unknown/Other states. No parameters are learned here.
 
 
 class SelectRawFeatures(BaseEstimator, TransformerMixin):
-    """Select an explicit list, keeping identifiers and outcomes outside the pipeline."""
+    """select the requested columns and keep identifiers and outcomes out of the pipeline"""
 
     def __init__(self, columns):
         self.columns = columns
@@ -101,11 +138,11 @@ class SelectRawFeatures(BaseEstimator, TransformerMixin):
 
 
 class MedianImputer(BaseEstimator, TransformerMixin):
-    """Fit medians and missingness indicators on training rows only.
+    """fit medians and missing indicators on training rows
 
-An entirely missing training column has no median and raises a clear error.
-Use AgeImputer for household ages, whose medians exclude zero codes.
-"""
+    entirely missing columns raise an error
+    the age imputer handles household ages separately and excludes zeros from its medians
+    """
 
     def fit(self, X, y=None):
         X = pd.DataFrame(X)
@@ -114,17 +151,25 @@ Use AgeImputer for household ages, whose medians exclude zero codes.
         empty_columns = list(self.medians_[self.medians_.isna()].index)
         if empty_columns:
             raise ValueError(f"No observed training values for: {empty_columns}")
-        self.indicator_columns_ = [c for c in X.columns if X[c].isna().any()]
+        self.indicator_columns_ = []
+        for column in X.columns:
+            missing = X[column].isna()
+            if missing.any():
+                self.indicator_columns_.append(column)
         return self
 
     def transform(self, X):
         check_is_fitted(self, "medians_")
-        X = pd.DataFrame(X)[list(self.feature_names_in_)]
+        X = pd.DataFrame(X)
+        X = X[list(self.feature_names_in_)]
         indicators = {}
         for column in self.indicator_columns_:
-            indicators[indicator_name(column)] = X[column].isna().astype(float)
-        filled = X.astype(float).fillna(self.medians_)
-        return pd.concat([filled, pd.DataFrame(indicators, index=X.index)], axis=1)
+            missing = X[column].isna()
+            indicators[indicator_name(column)] = missing.astype(float)
+        numeric = X.astype(float)
+        filled = numeric.fillna(self.medians_)
+        indicator_values = pd.DataFrame(indicators, index=X.index)
+        return pd.concat([filled, indicator_values], axis=1)
 
     def get_feature_names_out(self, input_features=None):
         names = list(self.feature_names_in_)
@@ -133,7 +178,7 @@ Use AgeImputer for household ages, whose medians exclude zero codes.
 
 
 class AgeImputer(BaseEstimator, TransformerMixin):
-    """Compare keeping recorded age zeros with replacing them by nonzero medians."""
+    """keep recorded age zeros or replace them with nonzero medians"""
 
     def __init__(self, zero_strategy="keep"):
         self.zero_strategy = zero_strategy
@@ -141,7 +186,8 @@ class AgeImputer(BaseEstimator, TransformerMixin):
     def fit(self, X, y=None):
         if self.zero_strategy not in ("keep", "median"):
             raise ValueError("zero_strategy must be 'keep' or 'median'")
-        X = pd.DataFrame(X)[list(AGE_ZERO_FLAGS)]
+        X = pd.DataFrame(X)
+        X = X[list(AGE_ZERO_FLAGS)]
         self.feature_names_in_ = np.asarray(X.columns, dtype=object)
         self.medians_ = {}
         for column in X.columns:
@@ -149,12 +195,18 @@ class AgeImputer(BaseEstimator, TransformerMixin):
             if observed_ages.empty:
                 raise ValueError(f"No positive training ages for {column}")
             self.medians_[column] = float(observed_ages.median())
-        self.indicator_columns_ = [c for c in X.columns if X[c].isna().any()]
+        self.indicator_columns_ = []
+        for column in X.columns:
+            missing = X[column].isna()
+            if missing.any():
+                self.indicator_columns_.append(column)
         return self
 
     def transform(self, X):
         check_is_fitted(self, "medians_")
-        X = pd.DataFrame(X)[list(self.feature_names_in_)].astype(float)
+        X = pd.DataFrame(X)
+        X = X[list(self.feature_names_in_)]
+        X = X.astype(float)
         out = X.copy()
         for column in self.feature_names_in_:
             is_zero = X[column] == 0
@@ -165,7 +217,8 @@ class AgeImputer(BaseEstimator, TransformerMixin):
                 out.loc[is_zero, column] = self.medians_[column]
             out.loc[is_missing, column] = self.medians_[column]
         for column in self.indicator_columns_:
-            out[indicator_name(column)] = X[column].isna().astype(float)
+            missing = X[column].isna()
+            out[indicator_name(column)] = missing.astype(float)
         return out
 
     def get_feature_names_out(self, input_features=None):
@@ -177,14 +230,19 @@ class AgeImputer(BaseEstimator, TransformerMixin):
 
 
 class BinaryEncoder(BaseEstimator, TransformerMixin):
-    """Encode Yes/No, using training modes and indicators for genuine missingness."""
+    """encode yes and no using training modes and missing indicators"""
 
     def _numeric(self, X):
         out = pd.DataFrame(index=X.index)
         for column in X.columns:
-            unexpected = X[column].notna() & ~X[column].isin(["Yes", "No"])
+            observed = X[column].notna()
+            valid_label = X[column].isin(["Yes", "No"])
+            unexpected = observed & ~valid_label
             if unexpected.any():
-                raise ValueError(f"Unexpected yes/no labels in {column}: {list(X.loc[unexpected, column].unique())}")
+                unexpected_values = X.loc[unexpected, column].unique()
+                raise ValueError(
+                    f"Unexpected yes/no labels in {column}: {list(unexpected_values)}"
+                )
             out[column] = X[column].map({"Yes": 1.0, "No": 0.0})
         return out
 
@@ -197,7 +255,11 @@ class BinaryEncoder(BaseEstimator, TransformerMixin):
             if modes.empty:
                 raise ValueError(f"No observed training labels for {column}")
             self.modes_[column] = float(modes.iloc[0])
-        self.indicator_columns_ = [c for c in numeric.columns if numeric[c].isna().any()]
+        self.indicator_columns_ = []
+        for column in numeric.columns:
+            missing = numeric[column].isna()
+            if missing.any():
+                self.indicator_columns_.append(column)
         return self
 
     def transform(self, X):
@@ -205,7 +267,8 @@ class BinaryEncoder(BaseEstimator, TransformerMixin):
         numeric = self._numeric(X[list(self.feature_names_in_)])
         out = numeric.fillna(self.modes_)
         for column in self.indicator_columns_:
-            out[indicator_name(column)] = numeric[column].isna().astype(float)
+            missing = numeric[column].isna()
+            out[indicator_name(column)] = missing.astype(float)
         return out
 
     def get_feature_names_out(self, input_features=None):
@@ -215,19 +278,21 @@ class BinaryEncoder(BaseEstimator, TransformerMixin):
 
 
 class ContinuousScaler(BaseEstimator, TransformerMixin):
-    """Scale only named continuous columns; leave indicators unchanged."""
+    """scale continuous columns and leave indicators unchanged"""
 
     def __init__(self, columns):
         self.columns = columns
 
     def fit(self, X, y=None):
         self.feature_names_in_ = np.asarray(X.columns, dtype=object)
-        self.scaler_ = StandardScaler().fit(X[list(self.columns)])
+        self.scaler_ = StandardScaler()
+        self.scaler_.fit(X[list(self.columns)])
         return self
 
     def transform(self, X):
         check_is_fitted(self, "scaler_")
-        out = X[list(self.feature_names_in_)].astype(float).copy()
+        out = X[list(self.feature_names_in_)].astype(float)
+        out = out.copy()
         out.loc[:, list(self.columns)] = self.scaler_.transform(out[list(self.columns)])
         return out
 
@@ -236,12 +301,12 @@ class ContinuousScaler(BaseEstimator, TransformerMixin):
 
 
 class NumericPreparation(BaseEstimator, TransformerMixin):
-    """Impute, optionally log skewed nonnegative columns, and scale continuous values.
+    """impute, optionally log skewed nonnegative columns, and scale continuous values
 
-Log eligibility uses only the training fold: an approved nonnegative measurement
-with observed skewness greater than 1. Binary ContractWindow and all indicators
-remain unscaled. Signed billing/change fields and ratios are never logged.
-"""
+    eligible columns are approved nonnegative measurements with training-fold skewness above one
+    the contract window and missing indicators stay unscaled
+    signed billing values, changes and ratios are never logged
+    """
 
     def __init__(self, scale=True, log_transform=True):
         self.scale = scale
@@ -257,22 +322,30 @@ remain unscaled. Signed billing/change fields and ratios are never logged.
 
     def fit(self, X, y=None):
         self.feature_names_in_ = np.asarray(X.columns, dtype=object)
-        self.imputer_ = MedianImputer().fit(X)
+        self.imputer_ = MedianImputer()
+        self.imputer_.fit(X)
         self.log_columns_ = []
         if self.log_transform:
             for column in X.columns:
                 observed = X[column].dropna()
-                if column in LOG_CANDIDATES and (observed >= 0).all() and observed.skew() > 1:
+                if column not in LOG_CANDIDATES:
+                    continue
+                if not (observed >= 0).all():
+                    continue
+                if observed.skew() > 1:
                     self.log_columns_.append(column)
-        values = self._logged(self.imputer_.transform(X))
+        values = self.imputer_.transform(X)
+        values = self._logged(values)
         self.continuous_columns_ = [c for c in X.columns if c != "ContractWindow"]
         if self.scale and self.continuous_columns_:
-            self.scaler_ = ContinuousScaler(self.continuous_columns_).fit(values)
+            self.scaler_ = ContinuousScaler(self.continuous_columns_)
+            self.scaler_.fit(values)
         return self
 
     def transform(self, X):
         check_is_fitted(self, "imputer_")
-        values = self._logged(self.imputer_.transform(X))
+        values = self.imputer_.transform(X)
+        values = self._logged(values)
         if self.scale and self.continuous_columns_:
             values = self.scaler_.transform(values)
         return values
@@ -281,19 +354,26 @@ remain unscaled. Signed billing/change fields and ratios are never logged.
         return self.imputer_.get_feature_names_out()
 
 
-def make_preprocessor(groups, model_kind="linear", age_strategy="keep",
-                      service_area_encoding="target", log_transform=True,
-                      include_retention=False):
-    """Build an unfitted pipeline for a chosen combination of feature groups.
+def make_preprocessor(
+    groups,
+    model_kind="linear",
+    age_strategy="keep",
+    service_area_encoding="target",
+    log_transform=True,
+    include_retention=False,
+):
+    """build an unfitted pipeline for the selected feature groups
 
-The modeling notebook chooses the baseline and addition order. This factory
-supports each combination without inspecting outcomes or fitting parameters.
-The returned matrix is sparse where one-hot encoding makes that useful.
-"""
+    linear models scale continuous values and tree models leave them unscaled
+    service area can use target or one-hot encoding
+    age zeros can be kept with flags or replaced by nonzero medians
+    retention columns are optional
+    """
     if model_kind not in ("linear", "tree"):
         raise ValueError("model_kind must be 'linear' or 'tree'")
     if service_area_encoding not in ("target", "onehot"):
         raise ValueError("service_area_encoding must be 'target' or 'onehot'")
+    # classify the selected raw and engineered columns by treatment
     spec = get_feature_spec(groups, include_retention, age_strategy)
     columns = spec["raw_features"] + spec["calculated_features"]
     numeric_columns = []
@@ -310,7 +390,10 @@ The returned matrix is sparse where one-hot encoding makes that useful.
     is_linear = model_kind == "linear"
     transformations = []
     if numeric_columns:
-        numeric = NumericPreparation(scale=is_linear, log_transform=is_linear and log_transform)
+        numeric = NumericPreparation(
+            scale=is_linear,
+            log_transform=is_linear and log_transform,
+        )
         transformations.append(("numeric", numeric, numeric_columns))
 
     age_columns = [c for c in AGE_ZERO_FLAGS if c in columns]
@@ -318,12 +401,13 @@ The returned matrix is sparse where one-hot encoding makes that useful.
         age_steps = [("impute", AgeImputer(zero_strategy=age_strategy))]
         if is_linear:
             age_steps.append(("scale", ContinuousScaler(age_columns)))
-        transformations.append(("ages", Pipeline(age_steps), age_columns))
+        age_pipeline = Pipeline(age_steps)
+        transformations.append(("ages", age_pipeline, age_columns))
 
     if binary_columns:
         transformations.append(("binary", BinaryEncoder(), binary_columns))
 
-    # Keep ServiceArea separate from the other nominal features for both options.
+    # encode service area separately from the other categories
     if "ServiceArea" in categorical_columns:
         categorical_columns.remove("ServiceArea")
         if service_area_encoding == "target":
@@ -338,9 +422,12 @@ The returned matrix is sparse where one-hot encoding makes that useful.
         transformations.append(("categories", onehot, categorical_columns))
 
     prepared_columns = ColumnTransformer(
-        transformations, remainder="drop", sparse_threshold=1.0,
+        transformations,
+        remainder="drop",
+        sparse_threshold=1.0,
         verbose_feature_names_out=False,
     )
+    # selection and fixed cleaning precede feature engineering and fitted steps
     return Pipeline([
         ("select", SelectRawFeatures(spec["raw_features"])),
         ("clean", FunctionTransformer(clean_raw, feature_names_out="one-to-one")),

@@ -1,7 +1,7 @@
-"""Feature groups and the engineered values selected during exploration.
+"""feature groups and values selected during exploration
 
-These definitions describe which information is available, before encoding and imputation.
-The modeling notebook chooses its baseline and group-addition order explicitly.
+these definitions describe the available inputs before encoding and imputation
+the modeling notebook chooses the baseline and group order
 """
 import numpy as np
 import pandas as pd
@@ -17,7 +17,7 @@ RETENTION_COLUMNS = [
     'MadeCallToRetentionTeam',
 ]
 
-# reuse the EDA membership without adding retention information to the main comparison
+# main comparison: exploration groups without retention fields
 MAIN_FEATURE_GROUPS = {}
 for group_name, group_columns in FEATURE_GROUPS.items():
     main_columns = []
@@ -26,7 +26,7 @@ for group_name, group_columns in FEATURE_GROUPS.items():
             main_columns.append(column)
     MAIN_FEATURE_GROUPS[group_name] = main_columns
 
-# indicators are registered here, but their existing imputers produce them only once
+# indicators are listed here but created by the imputers
 ENGINEERED_FEATURES = {
     'ContractWindow': {
         'group': 'account_billing',
@@ -74,7 +74,7 @@ ENGINEERED_FEATURES = {
 
 
 def _checked_groups(groups, allow_empty=False):
-    """Check an ordered group list without changing its order."""
+    """check an ordered group list without changing its order"""
     if not isinstance(groups, (list, tuple)):
         raise ValueError('Feature groups must be an ordered list or tuple')
     selected_groups = list(groups)
@@ -89,11 +89,10 @@ def _checked_groups(groups, allow_empty=False):
 
 
 def get_feature_spec(groups, include_retention=False, age_strategy='keep'):
-    """Describe raw inputs and eligible derivatives for selected groups.
+    """describe raw inputs and eligible derived features for the selected groups
 
-    This is a feature specification, not the final encoded column list. Missingness
-    indicators depend on the fitted training fold; zero flags depend on the age option.
-    Retention fields are a separate, explicit sensitivity option.
+    missing indicators depend on the training fold and age flags depend on the strategy
+    retention fields are an optional sensitivity check
     """
     selected_groups = _checked_groups(groups)
     if age_strategy not in ('keep', 'median'):
@@ -108,12 +107,15 @@ def get_feature_spec(groups, include_retention=False, age_strategy='keep'):
     engineered_features = []
     calculated_features = []
     for feature, details in ENGINEERED_FEATURES.items():
-        parents_available = set(details['parent_groups']).issubset(selected_groups)
-        is_omitted_age_flag = details['created_by'] == 'AgeImputer' and age_strategy == 'median'
-        if parents_available and not is_omitted_age_flag:
-            engineered_features.append(feature)
-            if details['created_by'] == 'EngineerFeatures':
-                calculated_features.append(feature)
+        parent_groups = set(details['parent_groups'])
+        parents_available = parent_groups.issubset(selected_groups)
+        is_age_flag = details['created_by'] == 'AgeImputer'
+        omit_age_flag = is_age_flag and age_strategy == 'median'
+        if not parents_available or omit_age_flag:
+            continue
+        engineered_features.append(feature)
+        if details['created_by'] == 'EngineerFeatures':
+            calculated_features.append(feature)
 
     return {
         'groups': selected_groups,
@@ -124,10 +126,9 @@ def get_feature_spec(groups, include_retention=False, age_strategy='keep'):
 
 
 def build_feature_configurations(baseline_groups, addition_order):
-    """Build nested configurations from an order supplied by the modeling notebook.
+    """build nested configurations from the order supplied by the modeling notebook
 
-    Every group must appear exactly once across the baseline and additions. This function
-    deliberately supplies no default baseline or ranking of the groups.
+    each group must appear once across the baseline and additions
     """
     baseline = _checked_groups(baseline_groups)
     additions = _checked_groups(addition_order, allow_empty=True)
@@ -149,11 +150,11 @@ def build_feature_configurations(baseline_groups, addition_order):
 
 
 class EngineerFeatures(BaseEstimator, TransformerMixin):
-    """Calculate the four selected derivatives before fold-fitted imputation.
+    """calculate selected features before fitting the imputer
 
-    Input must contain the selected groups' cleaned raw predictors. Retention columns may
-    also be supplied for sensitivity analysis. The imputers create ChangeMissing and the
-    age-zero flags separately. No statistics or target values are used in these formulas.
+    inputs must contain the cleaned raw predictors for the selected groups
+    retention columns are optional and imputers create missing and age flags separately
+    these formulas do not use learned statistics or target values
     """
 
     def __init__(self, groups):
@@ -181,6 +182,7 @@ class EngineerFeatures(BaseEstimator, TransformerMixin):
         return self
 
     def transform(self, X):
+        """add eligible features and leave undefined values missing for imputation"""
         check_is_fitted(self, 'calculated_features_')
         if not isinstance(X, pd.DataFrame):
             raise TypeError('EngineerFeatures requires a DataFrame with named raw columns')
@@ -191,20 +193,27 @@ class EngineerFeatures(BaseEstimator, TransformerMixin):
         for feature in self.calculated_features_:
             if feature == 'ContractWindow':
                 tenure = out['MonthsInService'].astype(float)
-                values = tenure.between(11, 12).astype(float)
+                in_window = tenure.between(11, 12)
+                values = in_window.astype(float)
                 values = values.where(tenure.notna())
             elif feature == 'inactive_subs':
-                values = out['UniqueSubs'].astype(float) - out['ActiveSubs'].astype(float)
+                total_subscribers = out['UniqueSubs'].astype(float)
+                active_subscribers = out['ActiveSubs'].astype(float)
+                values = total_subscribers - active_subscribers
             elif feature == 'RevenuePerMinute':
+                # monthly revenue / (monthly minutes + 1)
                 denominator = out['MonthlyMinutes'].astype(float) + 1
                 denominator = denominator.where(denominator != 0)
-                values = out['MonthlyRevenue'].astype(float) / denominator
+                revenue = out['MonthlyRevenue'].astype(float)
+                values = revenue / denominator
             elif feature == 'RelChangeMinutes':
+                # relative change only when the monthly minutes are positive
                 denominator = out['MonthlyMinutes'].astype(float)
                 denominator = denominator.where(denominator > 0)
-                values = out['PercChangeMinutes'].astype(float) / denominator
+                change = out['PercChangeMinutes'].astype(float)
+                values = change / denominator
 
-            # undefined results stay missing for the later imputer
+            # non-finite results become missing values for the later imputer
             out[feature] = values.replace([np.inf, -np.inf], np.nan)
         return out
 
