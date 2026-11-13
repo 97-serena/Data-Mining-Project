@@ -471,52 +471,252 @@ print(f"Mean paired AP difference: {retention_comparison['ap_difference'].mean()
 # %% [markdown]
 # ## 11. Logistic Regression (Shiqi)
 #
-# The fixed reference model and selected preprocessing were evaluated above. Reuse the
-# existing fold scores and out-of-fold predictions instead of fitting them again. The
-# team's eventual model settings may differ and should be recorded when available.
+# **Explanation:** Logistic Regression models the log-odds of churn as a weighted sum of the
+# prepared predictors. We use the fixed reference settings from section 9: the lbfgs solver,
+# L2 regularisation with C=1 and at most 2000 iterations. L2 regularisation shrinks the
+# weights towards zero, which keeps the many correlated and one-hot columns stable. The input
+# is the selected linear preprocessing (median age, target-encoded ServiceArea, log1p on
+# skewed counts, scaling of continuous values) on all six main information groups.
+#
+# This configuration was already evaluated in section 9, so we reuse its fold scores and
+# out-of-fold predictions instead of fitting it again.
 
 # %%
 logistic_results = main_results.copy()
+logistic_results['model'] = 'Logistic Regression'
 logistic_predictions = preprocessing_predictions[selected_name].copy()
+logistic_predictions['model'] = 'Logistic Regression'
+
+
+def paired_ap_difference(reference_results, results):
+    """AP of `results` minus AP of `reference_results` on each shared fold"""
+    paired = reference_results[['fold', 'average_precision']].merge(
+        results[['fold', 'average_precision']],
+        on='fold',
+        suffixes=('_reference', '_model'),
+        validate='one_to_one',
+    )
+    paired['ap_difference'] = (
+        paired['average_precision_model'] - paired['average_precision_reference']
+    )
+    return paired
+
+
 logistic_comparison = pd.concat(
     [baseline_fold_results, logistic_results],
     ignore_index=True,
 )
 display(summarize_scores(logistic_comparison).round(4))
 
+logistic_vs_tenure = paired_ap_difference(tenure_results, logistic_results)
+print('Logistic Regression minus fixed tenure rule, per fold:')
+display(logistic_vs_tenure.round(4))
+
 # %% [markdown]
-# The Logistic Regression score above uses the same folds that selected preprocessing;
-# compare it with the baselines as a development result, not an independent final score.
+# **Results and interpretation:** On the committed training split, Logistic Regression
+# reached a mean AP of 0.4269 (fold standard deviation 0.0098), compared with 0.2882 for the
+# prior dummy, which equals churn prevalence, and 0.3133 for the fixed tenure rule. It beat
+# the tenure rule on every fold, by 0.10 to 0.12 AP. Combining all six information groups
+# therefore ranks churners clearly better than chance or the single tenure window.
+#
+# The same folds were used to choose the preprocessing, so 0.4269 is a development result,
+# not an independent estimate of final performance. Only fixed reference settings were used;
+# the regularisation strength C has not been tuned.
 
 # %% [markdown]
 # ## 12. Naive Bayes (Shiqi)
 #
-# Fit Gaussian Naive Bayes using the linear preprocessing with log1p and scaling, and
-# evaluate its AP using the shared folds. Discuss correlated usage counts, which violate
-# its assumption that predictors are independent within each churn class.
+# **Explanation:** Gaussian Naive Bayes estimates, for each churn class, a mean and variance
+# for every prepared column, and combines the columns as if they were independent within each
+# class. It has no regularisation or depth setting to choose; we keep scikit-learn's default
+# variance smoothing. The input is the same selected linear preprocessing as Logistic
+# Regression, so log1p and scaling make the skewed counts closer to the bell shape the model
+# assumes.
 #
-# **Explanation:** Add the model settings and any required input-format handling here.
+# The shared preprocessing returns a sparse matrix because of one-hot encoding, but
+# GaussianNB needs a dense one. A small conversion step inside the model pipeline handles
+# this, so it is still fitted and applied fold by fold.
 
 # %%
-# Add the Naive Bayes pipeline and shared-fold evaluation here.
+from scipy import sparse
+from sklearn.naive_bayes import GaussianNB
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import FunctionTransformer
+
+
+def to_dense(values):
+    """GaussianNB needs a dense matrix; the shared preprocessing can return a sparse one"""
+    if sparse.issparse(values):
+        return values.toarray()
+    return values
+
+
+naive_bayes = Pipeline([
+    ('dense', FunctionTransformer(to_dense, accept_sparse=True)),
+    ('classifier', GaussianNB()),
+])
+naive_bayes_pipeline = make_model_pipeline(naive_bayes, all_groups, model_kind='linear')
+naive_bayes_results, naive_bayes_predictions = evaluate_classifier(
+    naive_bayes_pipeline, X_train, y_train, shared_folds, name='Naive Bayes (Gaussian)',
+)
+display(naive_bayes_results.round(4))
+
+naive_bayes_vs_logistic = paired_ap_difference(logistic_results, naive_bayes_results)
+print('Naive Bayes minus Logistic Regression, per fold:')
+display(naive_bayes_vs_logistic.round(4))
 
 # %% [markdown]
-# **Results and interpretation:** Add the AP summary, assumption limitations and whether
-# this model should be retained in the final report.
+# Naive Bayes assumes that the predictors are independent within each churn class. The table
+# below checks this for the usage counts: it lists the most strongly correlated pairs, measured
+# separately among customers who stayed and among customers who churned. This is a
+# descriptive check on the training data only.
+
+# %%
+usage_columns = MAIN_FEATURE_GROUPS['usage']
+class_correlations = {}
+for churn_value, label in [(0, 'stayed'), (1, 'churned')]:
+    class_rows = train.loc[train['churn'] == churn_value, usage_columns]
+    class_correlations[label] = class_rows.corr()
+
+correlation_rows = []
+for position, first in enumerate(usage_columns):
+    for second in usage_columns[position + 1:]:
+        correlation_rows.append({
+            'pair': f'{first} / {second}',
+            'correlation_stayed': class_correlations['stayed'].loc[first, second],
+            'correlation_churned': class_correlations['churned'].loc[first, second],
+        })
+usage_correlations = pd.DataFrame(correlation_rows).set_index('pair')
+usage_correlations['strongest'] = usage_correlations.abs().min(axis=1)
+usage_correlations = usage_correlations.sort_values('strongest', ascending=False)
+display(usage_correlations.drop(columns='strongest').head(8).round(3))
+strong_pairs = int((usage_correlations['strongest'] > 0.7).sum())
+print(f'Usage pairs with |correlation| > 0.7 in both classes: {strong_pairs} of {len(usage_correlations)}')
+
+# %% [markdown]
+# **Results and interpretation:** On the committed training split, Gaussian Naive Bayes
+# reached a mean AP of 0.3730 (fold standard deviation 0.0074). This is above the fixed
+# tenure rule (0.3133), but 0.054 AP below Logistic Regression on average, and lower on
+# every fold (by 0.045 to 0.063).
+#
+# A likely reason is that its independence assumption is clearly violated. Eight of the 55
+# pairs of usage counts have correlations above 0.7 among both customers who stayed and those
+# who churned; for example, MonthlyMinutes and ReceivedCalls correlate at about 0.82. Naive
+# Bayes treats such columns as separate pieces of evidence, so the same information is
+# counted several times. Logistic Regression instead learns one weight per column jointly,
+# which can share the effect between correlated columns.
+#
+# We suggest keeping Naive Bayes in the report as a simple probabilistic model whose weaker
+# score illustrates this assumption, rather than removing it.
 
 # %% [markdown]
 # ## 13. Decision Tree (Shiqi)
 #
-# Fit an initial shallow Decision Tree using the selected preprocessing and shared folds.
-# A shallow tree limits the number of successive splits used to make a prediction.
-#
-# **Explanation:** Add the depth limit, other model settings and their rationale here.
+# **Explanation:** A decision tree splits customers step by step on single predictors, such
+# as "MonthsInService below some value", and predicts the churn share in each final group.
+# We fix the settings before looking at scores: at most 5 levels of splits (`max_depth=5`)
+# and at least 50 customers in every final group (`min_samples_leaf=50`). Both limits keep the
+# tree shallow and stop it from memorising small groups, so its rules stay readable. The
+# input is the selected tree preprocessing: the same imputation and encoding as for Logistic
+# Regression, but without log1p or scaling, because splits only depend on the order of values.
 
 # %%
-# Add the Decision Tree pipeline and shared-fold evaluation here.
+from sklearn.tree import DecisionTreeClassifier
+
+decision_tree = DecisionTreeClassifier(
+    max_depth=5,
+    min_samples_leaf=50,
+    random_state=RANDOM_STATE,
+)
+tree_pipeline = make_model_pipeline(decision_tree, all_groups, model_kind='tree')
+tree_results, tree_predictions = evaluate_classifier(
+    tree_pipeline, X_train, y_train, shared_folds, name='Decision Tree (depth 5)',
+)
+display(tree_results.round(4))
+
+tree_vs_logistic = paired_ap_difference(logistic_results, tree_results)
+print('Decision Tree minus Logistic Regression, per fold:')
+display(tree_vs_logistic.round(4))
 
 # %% [markdown]
-# **Results and interpretation:** Add the AP summary and comparison with the baselines here.
+# To see how much the depth limit matters, we also score depths 3 and 8 on the same folds.
+# This is a descriptive check: the chosen depth stays 5, so the check does not select
+# the model.
+
+# %%
+depth_results = []
+for depth in [3, 5, 8]:
+    if depth == 5:
+        depth_results.append(tree_results)
+        continue
+    depth_pipeline = make_model_pipeline(
+        DecisionTreeClassifier(max_depth=depth, min_samples_leaf=50, random_state=RANDOM_STATE),
+        all_groups,
+        model_kind='tree',
+    )
+    results, _ = evaluate_classifier(
+        depth_pipeline, X_train, y_train, shared_folds, name=f'Decision Tree (depth {depth})',
+    )
+    depth_results.append(results)
+display(summarize_scores(pd.concat(depth_results, ignore_index=True)).round(4))
+
+# %% [markdown]
+# To see what the tree uses, we fit it once on the training part of fold 1 and list the
+# predictors with the largest importance. Importance is the share of the total split
+# improvement that a predictor provides; it describes this one tree, not a causal effect.
+
+# %%
+first_training_rows = shared_folds[0][0]
+inspected_tree = make_model_pipeline(decision_tree, all_groups, model_kind='tree')
+inspected_tree.fit(X_train.iloc[first_training_rows], y_train.iloc[first_training_rows])
+tree_feature_names = inspected_tree.named_steps['preprocess'].get_feature_names_out()
+tree_importance = pd.Series(
+    inspected_tree.named_steps['model'].feature_importances_,
+    index=tree_feature_names,
+    name='importance',
+)
+tree_importance = tree_importance[tree_importance > 0].sort_values(ascending=False)
+display(tree_importance.head(10).round(3).to_frame())
+print(f'Predictors used in at least one split: {len(tree_importance)} of {len(tree_feature_names)}')
+
+# %% [markdown]
+# **Results and interpretation:** On the committed training split, the depth-5 tree reached
+# a mean AP of 0.4066 (fold standard deviation 0.0086). It is well above the tenure rule
+# (0.3133) and Naive Bayes (0.3730), but 0.020 AP below Logistic Regression on average and
+# lower on every fold.
+#
+# The depth check shows that the limit matters: depth 3 reached 0.3725 and depth 8 reached
+# 0.4166. A single shallow tree cannot express many combinations of predictors, which is the
+# gap that Random Forest and Gradient Boosting (sections 14 and 15) are designed to close.
+# We keep depth 5 as the fixed initial setting; any tuning should be decided together with
+# those models.
+#
+# The tree fitted on fold 1 used only 18 of 115 prepared columns. Equipment age
+# (CurrentEquipmentDays) gave about a third of the total split improvement, followed by the
+# engineered usage change (RelChangeMinutes), tenure (MonthsInService), the missing-change
+# indicator and the 11-12 month window (ContractWindow). These importances describe one tree
+# and show association with churn, not cause.
+
+# %% [markdown]
+# ### Summary of the models so far
+#
+# All models below use the same five folds. Out-of-fold predictions for every model are
+# collected in `model_predictions` for the later threshold and segment analysis.
+
+# %%
+model_fold_results = pd.concat(
+    [baseline_fold_results, logistic_results, naive_bayes_results, tree_results],
+    ignore_index=True,
+)
+display(summarize_scores(model_fold_results).sort_values('mean_ap', ascending=False).round(4))
+
+model_predictions = pd.concat([
+    baseline_predictions.drop(columns='CustomerID'),
+    logistic_predictions,
+    naive_bayes_predictions,
+    tree_predictions,
+]).join(train[['CustomerID']])
+assert model_predictions.groupby('model').size().eq(len(train)).all()
 
 # %% [markdown]
 # ## 14. Random Forest (Yan-Ru)
