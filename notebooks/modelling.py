@@ -378,6 +378,11 @@ display(log_differences.round(4))
 #
 # The choice is a fixed literal for downstream comparisons, not a value silently
 # reselected on every notebook run. Revisit it deliberately if the data or model changes.
+#
+# These values are also the defaults of `make_preprocessor` and `make_model_pipeline`, so a
+# model built without explicit preprocessing options still uses the selected preprocessing.
+# The check below stops the notebook if the code defaults and this choice ever diverge;
+# change both together.
 
 # %%
 selected_preprocessing = {
@@ -395,6 +400,16 @@ best_mean_ap = preprocessing_summary['mean_ap'].max()
 selected_mean_ap = preprocessing_summary.loc[selected_name, 'mean_ap']
 if best_mean_ap - selected_mean_ap > selection_tolerance:
     print('The recorded choice is now outside the 0.001 AP tolerance; review it before continuing')
+
+# the shared code defaults must match the selected preprocessing
+import inspect
+from src.preprocessing import make_preprocessor
+
+default_options = inspect.signature(make_preprocessor).parameters
+for option, value in selected_preprocessing.items():
+    assert default_options[option].default == value, (
+        f'make_preprocessor default for {option} differs from the selected preprocessing'
+    )
 
 display(pd.DataFrame([selected_preprocessing]))
 

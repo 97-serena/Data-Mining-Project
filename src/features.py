@@ -17,6 +17,9 @@ RETENTION_COLUMNS = [
     'MadeCallToRetentionTeam',
 ]
 
+# age-zero option selected in notebooks/modelling.py section 9; used as the default everywhere
+DEFAULT_AGE_STRATEGY = 'median'
+
 # main comparison: exploration groups without retention fields
 MAIN_FEATURE_GROUPS = {}
 for group_name, group_columns in FEATURE_GROUPS.items():
@@ -88,7 +91,7 @@ def _checked_groups(groups, allow_empty=False):
     return selected_groups
 
 
-def get_feature_spec(groups, include_retention=False, age_strategy='keep'):
+def get_feature_spec(groups, include_retention=False, age_strategy=DEFAULT_AGE_STRATEGY):
     """describe raw inputs and eligible derived features for the selected groups
 
     missing indicators depend on the training fold and age flags depend on the strategy

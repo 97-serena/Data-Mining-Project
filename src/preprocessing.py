@@ -12,7 +12,7 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import FunctionTransformer, OneHotEncoder, StandardScaler, TargetEncoder
 from sklearn.utils.validation import check_is_fitted
 
-from src.features import EngineerFeatures, get_feature_spec
+from src.features import DEFAULT_AGE_STRATEGY, EngineerFeatures, get_feature_spec
 
 MISSING_CATEGORY = "__MISSING__"
 CATEGORICAL_COLUMNS = [
@@ -180,7 +180,7 @@ class MedianImputer(BaseEstimator, TransformerMixin):
 class AgeImputer(BaseEstimator, TransformerMixin):
     """keep recorded age zeros or replace them with nonzero medians"""
 
-    def __init__(self, zero_strategy="keep"):
+    def __init__(self, zero_strategy=DEFAULT_AGE_STRATEGY):
         self.zero_strategy = zero_strategy
 
     def fit(self, X, y=None):
@@ -357,7 +357,7 @@ class NumericPreparation(BaseEstimator, TransformerMixin):
 def make_preprocessor(
     groups,
     model_kind="linear",
-    age_strategy="keep",
+    age_strategy=DEFAULT_AGE_STRATEGY,
     service_area_encoding="target",
     log_transform=True,
     include_retention=False,
@@ -368,6 +368,7 @@ def make_preprocessor(
     service area can use target or one-hot encoding
     age zeros can be kept with flags or replaced by nonzero medians
     retention columns are optional
+    the defaults match the preprocessing selected in notebooks/modelling.py section 9
     """
     if model_kind not in ("linear", "tree"):
         raise ValueError("model_kind must be 'linear' or 'tree'")

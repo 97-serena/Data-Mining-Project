@@ -393,6 +393,7 @@ display(pd.DataFrame(engineered_rows))
 # %%
 # import the shared definitions and the helper used later by modeling
 from src.features import (
+    DEFAULT_AGE_STRATEGY,
     ENGINEERED_FEATURES,
     RETENTION_COLUMNS,
     build_feature_configurations,
@@ -443,9 +444,10 @@ display(pd.DataFrame(engineered_group_rows))
 # ### 7.3 Full feature sets and incremental configurations
 #
 # The main set contains 53 raw predictors; the retention sensitivity set contains 56.
-# The seven selected engineered features are eligible under the keep-zeros option.
-# The median-age option omits the two age-zero flags. Actual output columns also
-# depend on fitted missingness indicators and categorical encoding.
+# The modelling chapter selected the median-age option, which is now the default: it omits
+# the two age-zero flags, leaving five engineered features. The keep-zeros option adds the
+# flags back, giving seven. Actual output columns also depend on fitted missingness
+# indicators and categorical encoding.
 #
 # `build_feature_configurations(baseline_groups, addition_order)` constructs nested group
 # lists ending in the full set. Each list can be passed to `get_feature_spec` and
@@ -456,7 +458,7 @@ display(pd.DataFrame(engineered_group_rows))
 # define the complete reference sets without fitting any transformation
 full_feature_set = get_feature_spec(all_groups)
 retention_feature_set = get_feature_spec(all_groups, include_retention=True)
-median_age_feature_set = get_feature_spec(all_groups, age_strategy='median')
+keep_age_feature_set = get_feature_spec(all_groups, age_strategy='keep')
 feature_sets = {
     'full': full_feature_set,
     'with_retention': retention_feature_set,
@@ -467,8 +469,8 @@ assert set(full_feature_set['raw_features']) == set(main_features)
 assert set(retention_feature_set['raw_features']) == set(with_retention_features)
 assert len(full_feature_set['raw_features']) == 53
 assert len(retention_feature_set['raw_features']) == 56
-assert len(full_feature_set['engineered_features']) == 7
-assert len(median_age_feature_set['engineered_features']) == 5
+assert len(full_feature_set['engineered_features']) == 5
+assert len(keep_age_feature_set['engineered_features']) == 7
 assert set(RETENTION_COLUMNS).isdisjoint(full_feature_set['raw_features'])
 
 feature_set_rows = []
@@ -641,7 +643,7 @@ for option in validation_options:
 
         # no flag is generated twice, and median-age handling omits zero flags
         assert output_names.count('ChangeMissing') <= 1
-        if settings.get('age_strategy', 'keep') == 'median':
+        if settings.get('age_strategy', DEFAULT_AGE_STRATEGY) == 'median':
             assert set(AGE_ZERO_FLAGS.values()).isdisjoint(output_names)
 
         validation_rows.append({
