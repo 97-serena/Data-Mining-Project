@@ -52,13 +52,7 @@ print(summarize_scores(scores))
 
 For other estimators, `make_model_pipeline(estimator, groups, **options)` in `src.evaluation` creates a pipeline that can be passed to `evaluate_classifier`. The test set is reserved for final evaluation.
 
-## Tests and dependencies
-
-Run the tests with:
-
-```bash
-python -m unittest discover -s tests
-```
+## Dependencies
 
 To update and sync the dependency lock:
 

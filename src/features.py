@@ -1,8 +1,10 @@
 """feature groups and values selected during exploration
 
 these definitions describe the available inputs before encoding and imputation
-the modeling notebook chooses the baseline and group order
+the modeling notebook chooses the baseline and the group combinations to compare
 """
+from itertools import combinations
+
 import numpy as np
 import pandas as pd
 from sklearn.base import BaseEstimator, TransformerMixin
@@ -149,6 +151,28 @@ def build_feature_configurations(baseline_groups, addition_order):
         if position == len(additions) - 1:
             configuration_name = 'full'
         configurations[configuration_name] = selected_groups.copy()
+    return configurations
+
+
+def build_feature_subsets(baseline_groups, optional_groups):
+    """Build every optional-group combination with a fixed background baseline.
+
+    Use the same canonical column order as the full main model. This avoids changing
+    column order when reaching the same group set through different addition orders.
+    """
+    baseline = _checked_groups(baseline_groups)
+    optional = _checked_groups(optional_groups, allow_empty=True)
+    all_groups = _checked_groups(baseline + optional)
+    if set(all_groups) != set(MAIN_FEATURE_GROUPS):
+        raise ValueError('The baseline and optional groups must cover all six groups')
+    configurations = {}
+    for size in range(len(optional) + 1):
+        for subset in combinations(optional, size):
+            name = '+'.join(subset) if subset else 'baseline'
+            if subset and size == len(optional):
+                name = 'full'
+            chosen = set(baseline) | set(subset)
+            configurations[name] = [group for group in MAIN_FEATURE_GROUPS if group in chosen]
     return configurations
 
 

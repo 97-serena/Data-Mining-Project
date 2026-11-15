@@ -363,7 +363,7 @@ engineered = feature_engineer.fit_transform(clean[main_features])
 calculated_features = feature_engineer.calculated_features_
 
 # verify the formulas without changing the raw predictors
-pd.testing.assert_frame_equal(engineered[main_features], clean[main_features])
+assert engineered[main_features].equals(clean[main_features])
 assert engineered['inactive_subs'].equals(
     clean['UniqueSubs'].astype(float) - clean['ActiveSubs'].astype(float)
 )
