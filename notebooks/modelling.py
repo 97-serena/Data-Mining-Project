@@ -16,38 +16,48 @@
 # %% [markdown]
 # # Modelling
 #
-# We set up the shared evaluation procedure and establish three simple reference scores:
-# deterministic and random dummy classifiers, and a fixed tenure rule. The preprocessing
-# and retention sections compare Logistic Regression on the shared folds.
+# This chapter evaluates models for telecom customer churn and examines the predictive
+# value of different customer information. We establish baseline scores, compare
+# preprocessing choices and five supervised models, and analyse missed churners across
+# tenure and spending groups.
 #
-# We compare five learned models, all eight behavioural-group combinations, and
-# missed churners by customer segment. All results below are development results.
+# The analysis uses the predefined training partition and five shared validation folds.
+# All reported results describe model development. The test partition remains reserved
+# for an independent evaluation after the modelling choices have been fixed.
 
 # %% [markdown]
-# ## 1. Shared imports
+# ## 1. Analysis setup
 #
-# We locate the project and import the reusable evaluation code. Like the earlier
-# chapters, this text notebook works from the project root or the notebooks folder.
+# We use a common data loader, feature definitions and evaluation procedure throughout
+# the analysis. This ensures that the models use the same customers, target definition
+# and validation partitions.
 
 # %%
 from pathlib import Path
 import sys
 import warnings
 
+# locate the repository from its root or the notebooks folder
 project_root = Path.cwd()
-if not (project_root / 'src' / 'data.py').is_file():
+shared_loader_file = project_root / 'src' / 'data.py'
+if not shared_loader_file.is_file():
     project_root = project_root.parent
-if not (project_root / 'src' / 'data.py').is_file():
+    shared_loader_file = project_root / 'src' / 'data.py'
+# stop if the project data loader is unavailable
+if not shared_loader_file.is_file():
     raise FileNotFoundError('Open this notebook from the repository root or notebooks folder')
+# make the shared project modules available
 sys.path.insert(0, str(project_root))
 
+# import numerical, display and evaluation tools
 import numpy as np
 import pandas as pd
-from IPython.display import display
+from IPython.display import Markdown, display
 from sklearn.dummy import DummyClassifier
 from sklearn.exceptions import ConvergenceWarning
 from sklearn.linear_model import LogisticRegression
 
+# import the shared modelling procedures
 from src.baselines import TenureRule
 from src.data import RANDOM_STATE, load_train
 from src.evaluation import (
@@ -68,6 +78,7 @@ from src.models import make_early_stopping_pipeline
 from src.group_comparison import group_contributions, summarize_contributions
 from src.thresholds import select_f1_threshold, flag_top_fraction
 
+# show complete result tables
 pd.set_option('display.width', 200)
 pd.set_option('display.max_columns', None)
 pd.set_option('display.max_colwidth', None)
@@ -75,52 +86,58 @@ pd.set_option('display.max_colwidth', None)
 # %% [markdown]
 # ## 2. Training data and churn prevalence
 #
-# We use only the committed 80% training partition and preserve its row order. Churn is
-# the positive class (1). Prevalence means the proportion of customers who churn.
-# Identifiers and both versions of the target are excluded from the predictor table.
-# We do not load a test dataframe or change dataset/split.csv.
+# The training partition contains 80% of the labelled customers. We preserve its row
+# order and represent churn as the positive class, with 1 indicating churn and 0
+# indicating continued service. The identifier and both forms of the target are excluded
+# from the predictor table. Churn prevalence is the proportion of customers who churn.
 
 # %%
+# load the predefined training partition
 train = load_train()
 assert train['CustomerID'].is_unique
 
-X_train = train.drop(columns=['CustomerID', 'Churn', 'churn'])
+# separate the predictors from identifiers and outcomes
+excluded_columns = ['CustomerID', 'Churn', 'churn']
+X_train = train.drop(columns=excluded_columns)
 y_train = train['churn']
 training_prevalence = y_train.mean()
 
-display(pd.DataFrame({
+# summarise training size and churn prevalence
+training_summary = pd.DataFrame({
     'customers': [len(train)],
     'churners': [int(y_train.sum())],
     'churn_prevalence': [training_prevalence],
-}))
+})
+display(training_summary)
 
 # %% [markdown]
-# ## 3. Shared evaluation protocol
+# ## 3. Evaluation procedure
 #
-# Five-fold cross-validation fits on four parts of the training data and evaluates on
-# the fifth, rotating until each customer has been evaluated once. Stratification keeps
-# the churn proportion similar across the parts. Shuffling with seed 42 reproduces the
-# assignments. Every model and configuration must reuse these same row positions.
+# We use stratified five-fold cross-validation. Each model is fitted on four folds and
+# evaluated on the remaining fold, so every customer receives one validation prediction.
+# Stratification preserves similar churn proportions across folds. Shuffling with seed 42
+# produces reproducible assignments, which are shared by all models and feature sets.
 #
-# Average Precision (AP) is the primary metric. It summarises precision (the share of
-# flagged customers who churn) as recall (the share of all churners found) increases.
-# We score churn probabilities or risk scores, then report the mean and standard
-# deviation of the five AP values. Standard deviation describes variation across folds;
-# it is not a confidence interval. AP is not classification accuracy.
+# Average precision (AP) is the primary metric. It summarises precision as recall
+# increases: precision is the proportion of flagged customers who churn, and recall is
+# the proportion of churners identified. We report the mean and standard deviation of
+# the five AP scores. The standard deviation describes fold variation and is not a
+# confidence interval. AP measures ranking performance rather than classification accuracy.
 #
-# For learned models, src.evaluation.make_model_pipeline attaches the existing
-# make_preprocessor to the estimator. The evaluator clones and fits the whole pipeline
-# within each fold: medians, encodings, log eligibility and scaling use training rows
-# only. ServiceArea target encoding also uses its existing internal cross-fitting,
-# so each training row is encoded without its own label. Validation rows are only
-# transformed. Never preprocess all training data into one matrix before model CV.
+# Preprocessing is fitted within each training fold. Medians, category encodings,
+# log-transformation choices and scaling therefore exclude the validation observations.
+# ServiceArea target encoding uses additional cross-fitting within the training fold,
+# so a training customer's encoding excludes that customer's own outcome. Gradient
+# boosting also separates its internal stopping sample before fitting preprocessing.
 #
-# The test partition is reserved for a single final evaluation after preprocessing,
-# model settings and any decision threshold have been fixed using training data.
+# The final test evaluation is performed only after the input groups, preprocessing,
+# model settings and decision threshold have been fixed.
 
 # %%
+# create the five shared training and validation assignments
 shared_folds = make_shared_folds(X_train, y_train)
 
+# record sample sizes and class proportions for each fold
 fold_rows = []
 for fold_number, (training_rows, validation_rows) in enumerate(shared_folds, start=1):
     fold_rows.append({
@@ -130,30 +147,36 @@ for fold_number, (training_rows, validation_rows) in enumerate(shared_folds, sta
         'training_churn_prevalence': y_train.iloc[training_rows].mean(),
         'validation_churn_prevalence': y_train.iloc[validation_rows].mean(),
     })
-display(pd.DataFrame(fold_rows).round(4))
+fold_summary = pd.DataFrame(fold_rows)
+display(fold_summary.round(4))
 
 # %% [markdown]
 # ## 4. Background information and behavioural groups
 #
-# The fixed background contains account, demographic and handset information.
-# Section 16 compares every combination of three extra groups: usage, usage change
-# and service quality. We also keep one addition order as an easy-to-follow example.
-# A single order cannot tell us which group contributes most across other combinations.
+# The background representation contains account, demographic and handset information.
+# We compare all eight combinations of three additional groups: usage, usage change and
+# service quality. A sequential comparison adds these groups in that order and describes
+# their gains under one fixed information sequence.
 #
-# A calculated feature is included only when all its parent groups are available.
-# The legacy name usage_change_retention is kept for compatibility, but the three
-# retention fields stay outside the main analysis and are checked separately in section 10.
+# Calculated features are included only when all their parent groups are available.
+# The usage-change group excludes RetentionCalls, RetentionOffersAccepted and
+# MadeCallToRetentionTeam. These fields are assessed separately because their
+# availability at prediction time is uncertain.
 
 # %%
+# define the fixed background information
 baseline_groups = [
     'account_billing',
     'demographics_region',
     'handset_lifestyle',
 ]
+# define the behavioural groups and their sequential comparison order
 addition_order = ['usage', 'usage_change_retention', 'service_quality']
+# construct the sequential and complete group configurations
 feature_configurations = build_feature_configurations(baseline_groups, addition_order)
 feature_subset_configurations = build_feature_subsets(baseline_groups, addition_order)
 
+# describe the inputs available in each combination
 configuration_rows = []
 for name, groups in feature_subset_configurations.items():
     specification = get_feature_spec(groups)
@@ -162,20 +185,19 @@ for name, groups in feature_subset_configurations.items():
         'groups': ', '.join(groups),
         'raw_predictors': len(specification['raw_features']),
     })
-display(pd.DataFrame(configuration_rows))
+configuration_summary = pd.DataFrame(configuration_rows)
+display(configuration_summary)
 
 # %% [markdown]
 # ## 5. Dummy classifiers
 #
-# The deterministic prior strategy ignores customer characteristics. It estimates churn
-# prevalence using only the fold's training labels and assigns every validation customer that same
-# score. It learns a class proportion, but no relationship between predictors and churn.
-# With constant scores, AP equals the validation fold's churn prevalence. We report both
-# values so later models have an explicit reference level.
-#
-# The dummy needs no preprocessing because none of the predictor values affects its score.
+# The prior dummy assigns every validation customer the churn prevalence observed in
+# the corresponding training fold. It learns no relationship between predictors and
+# churn. Its constant scores produce an AP equal to validation prevalence, providing
+# a reference for the learned models. No predictor preprocessing is required.
 
 # %%
+# evaluate constant scores based on training-fold prevalence
 dummy = DummyClassifier(strategy='prior')
 dummy_results, dummy_predictions = evaluate_classifier(
     dummy, X_train, y_train, shared_folds, name='Dummy (prior)',
@@ -184,12 +206,12 @@ assert np.allclose(dummy_results['average_precision'], dummy_results['churn_prev
 display(dummy_results.round(4))
 
 # %% [markdown]
-# The stratified dummy also ignores customer characteristics, but randomly assigns a
-# class according to the training fold's class proportions. Its probability output is
-# a one-hot random class assignment, so AP can vary between runs. We leave its random
-# state unset to make it non-deterministic; the shared fold assignments stay fixed.
+# The stratified dummy randomly assigns a class according to the training-fold class
+# proportions. Its probability output is a one-hot class assignment. This baseline is
+# left unseeded to illustrate random variation; the validation assignments remain fixed.
 
 # %%
+# evaluate random class assignments on the same folds
 random_dummy = DummyClassifier(strategy='stratified')
 random_dummy_results, random_dummy_predictions = evaluate_classifier(
     random_dummy, X_train, y_train, shared_folds, name='Dummy (stratified)',
@@ -199,16 +221,17 @@ display(random_dummy_results.round(4))
 # %% [markdown]
 # ## 6. Fixed tenure rule
 #
-# The tenure baseline gives customers at months 11-12 score 1 and everyone else score 0.
-# These are two priority levels, not estimated probabilities. The window is inclusive
-# and is never tuned here. Missing tenure receives score 0 because window membership is
-# unknown. No imputation, encoding or scaling is needed for this rule.
+# The tenure rule assigns score 1 to customers with 11–12 months of service and score 0
+# to all other customers. These scores represent two priority levels. Missing tenure
+# receives score 0 because membership of the window is unknown. The rule requires no
+# fitted preprocessing or model parameters.
 #
-# The window came from labelled exploratory analysis. Although this rule fits no model
-# parameters, its training-CV result is not an independent confirmation of that pattern.
-# It is a transparent heuristic reference; the final holdout remains the later check.
+# The window was identified during labelled exploratory analysis. Its development score
+# therefore provides a descriptive baseline rather than an independent confirmation
+# of the tenure pattern.
 
 # %%
+# evaluate the fixed tenure window
 tenure_rule = TenureRule()
 tenure_results, tenure_predictions = evaluate_classifier(
     tenure_rule, X_train, y_train, shared_folds, name='Fixed tenure (11-12 months)',
@@ -218,12 +241,12 @@ display(tenure_results.round(4))
 # %% [markdown]
 # ## 7. Baseline comparison
 #
-# We combine the per-fold results and report mean AP, its standard deviation and mean
-# validation prevalence. The AP gain is an absolute difference: 0.01 means one AP point,
-# not a relative percentage improvement. All three predictors use identical folds.
-# Later learned models should be compared with these references using the same procedure.
+# We summarise the three baselines using mean AP, fold standard deviation and mean
+# validation prevalence. Gains are absolute AP differences: a gain of 0.01 represents
+# one AP point. All baselines use the same validation observations.
 
 # %%
+# combine the baseline fold scores and calculate their summary
 baseline_fold_results = pd.concat(
     [dummy_results, random_dummy_results, tenure_results],
     ignore_index=True,
@@ -233,22 +256,23 @@ display(baseline_summary.round(4))
 
 print(f'Training churn prevalence: {training_prevalence:.4f}')
 for name, row in baseline_summary.iterrows():
-    print(f"{name}: AP {row['mean_ap']:.4f}, fold standard deviation {row['std_ap']:.4f}")
+    mean_ap = row['mean_ap']
+    fold_std = row['std_ap']
+    print(f'{name}: mean AP {mean_ap:.4f}, fold standard deviation {fold_std:.4f}')
 
 # %% [markdown]
-# ## 8. Out-of-fold predictions for later analysis
+# ## 8. Out-of-fold predictions
 #
-# Out-of-fold means each customer's score comes from a predictor fitted on the other
-# four folds. The evaluator returns those scores in the original training-row order.
-# We attach customer ids to make the correspondence explicit. Kaustubh can obtain the
-# same output format for learned models and choose a threshold or analyse missed churners
-# later. We do not choose a threshold or perform his segment analysis here.
+# Each out-of-fold score is produced by a model fitted without that customer's
+# validation fold. Predictions retain the training-row order and are linked to customer
+# identifiers for threshold selection and segment analysis.
 #
-# AP is summarised from the five fold scores above, not recalculated after pooling all
-# out-of-fold scores. Pooling can produce a different result, especially for the dummy
-# because the constant training prevalence differs slightly between folds.
+# Model AP is summarised from the five fold scores. Computing AP from pooled predictions
+# can give a different result, particularly when the prior dummy assigns slightly
+# different constant scores in different folds.
 
 # %%
+# collect baseline scores in the training-row order
 baseline_predictions = pd.concat([
     dummy_predictions,
     random_dummy_predictions,
@@ -256,29 +280,33 @@ baseline_predictions = pd.concat([
 ])
 baseline_predictions = baseline_predictions.join(train[['CustomerID']])
 
-assert baseline_predictions.groupby('model').size().eq(len(train)).all()
+# verify that every baseline has one score per customer
+baseline_prediction_counts = baseline_predictions.groupby('model').size()
+assert baseline_prediction_counts.eq(len(train)).all()
 assert baseline_predictions['churn_score'].notna().all()
 display(baseline_predictions.head())
 
 # %% [markdown]
-# ## 9. Preprocessing comparisons
+# ## 9. Preprocessing comparison
 #
-# We compare all eight combinations on the full main information set, using the same
-# five folds and the same fixed Logistic Regression reference settings: lbfgs, L2
-# regularisation with C=1, and at most 2000 iterations. A convergence warning stops
-# the run rather than allowing an unfinished fit into the comparison.
+# We evaluate eight preprocessing combinations using all main feature groups and a
+# fixed logistic regression model. The model uses the lbfgs solver, L2 regularisation
+# with C=1 and at most 2,000 iterations. A convergence warning prevents an unfinished
+# fit from entering the comparison.
 #
-# Age keep retains zeros and adds zero flags; age median replaces zeros with the
-# training-fold positive-age median. ServiceArea uses either target or one-hot encoding.
-# The log option applies log1p to eligible skewed columns, chosen within each fold.
-# All learned preprocessing is fitted within the training portion of each fold.
+# The age treatment either retains recorded zeros with zero indicators or replaces
+# them with training-fold medians of positive ages. ServiceArea uses target or one-hot
+# encoding. The log option applies log1p to eligible skewed measurements. All learned
+# transformations are fitted within the training fold.
 #
-# We select by mean fold AP. Configurations within 0.001 AP of the best are treated as
-# practically similar; among them we prefer one-hot over target encoding, no log over
-# log, then median over keep for age zeros. This tolerance is a practical choice, not a
-# statistical test. The fold comparisons below show how consistent the differences are.
+# Mean fold AP determines the preferred representation. Configurations within 0.001 AP
+# of the best score are treated as practically similar. Within that tolerance, the
+# preference is one-hot encoding, no log transformation, and median replacement of age
+# zeros, in that order. This tolerance expresses a practical choice rather than a
+# statistical test.
 
 # %%
+# define the fixed logistic regression model
 all_groups = list(MAIN_FEATURE_GROUPS)
 logistic_model = LogisticRegression(
     C=1.0,
@@ -287,6 +315,7 @@ logistic_model = LogisticRegression(
     random_state=RANDOM_STATE,
 )
 
+# list all eight preprocessing combinations
 preprocessing_options = []
 for age_strategy in ['keep', 'median']:
     for area_encoding in ['target', 'onehot']:
@@ -297,6 +326,7 @@ for age_strategy in ['keep', 'median']:
                 'log_transform': use_log,
             })
 
+# evaluate each combination with fold-fitted preprocessing
 preprocessing_results = []
 preprocessing_predictions = {}
 for options in preprocessing_options:
@@ -322,6 +352,7 @@ for options in preprocessing_options:
     preprocessing_results.append(fold_results)
     preprocessing_predictions[name] = predictions
 
+# summarise the scores by configuration and fold
 preprocessing_fold_results = pd.concat(preprocessing_results, ignore_index=True)
 preprocessing_summary = summarize_scores(preprocessing_fold_results)
 preprocessing_summary = preprocessing_summary.sort_values('mean_ap', ascending=False)
@@ -331,11 +362,13 @@ preprocessing_fold_ap = preprocessing_fold_results.pivot(
 display(preprocessing_summary.round(4))
 display(preprocessing_fold_ap.round(4))
 
+
 # %% [markdown]
-# Each difference below compares two choices on the same validation fold, holding the
-# other two preprocessing options fixed. A positive value favors the second choice.
+# Paired differences compare preprocessing choices on the same validation fold while
+# holding the other choices fixed. A positive difference favours the second treatment.
 
 # %%
+# compare one preprocessing choice while matching folds and other options
 def compare_preprocessing_options(option, first, second):
     """compare one preprocessing choice while holding the others and fold fixed"""
     option_columns = ['age_strategy', 'service_area_encoding', 'log_transform']
@@ -373,22 +406,18 @@ print('Log: log1p minus no log')
 display(log_differences.round(4))
 
 # %% [markdown]
-# The recorded choice is median age, target encoding and log1p. On the committed
-# training split, its mean AP was 0.4269 versus 0.4270 for keep/target/log1p. These
-# were within the 0.001 tolerance, so the median option was preferred. One-hot and
-# no-log configurations were outside the tolerance. These scores were also used to
-# choose preprocessing, so they are not an independent estimate of final performance.
-# The test partition remains reserved for the final evaluation.
+# The selected representation replaces age zeros with positive-age medians, uses
+# target encoding for ServiceArea and applies log1p to eligible measurements. Its mean
+# AP is 0.4269, compared with 0.4270 for the corresponding representation that retains
+# age zeros. The difference falls within the predefined tolerance, favouring median
+# replacement. The one-hot and no-log alternatives fall outside that tolerance.
 #
-# The choice is a fixed literal for downstream comparisons, not a value silently
-# reselected on every notebook run. Revisit it deliberately if the data or model changes.
-#
-# These values are also the defaults of `make_preprocessor` and `make_model_pipeline`, so a
-# model built without explicit preprocessing options still uses the selected preprocessing.
-# The check below stops the notebook if the code defaults and this choice ever diverge;
-# change both together.
+# This representation is fixed for subsequent comparisons and matches the defaults of
+# the shared preprocessing functions. Because the same folds informed this choice,
+# the resulting AP is a development estimate.
 
 # %%
+# record the selected preprocessing choices explicitly
 selected_preprocessing = {
     'age_strategy': 'median',
     'service_area_encoding': 'target',
@@ -403,7 +432,7 @@ selection_tolerance = 0.001
 best_mean_ap = preprocessing_summary['mean_ap'].max()
 selected_mean_ap = preprocessing_summary.loc[selected_name, 'mean_ap']
 if best_mean_ap - selected_mean_ap > selection_tolerance:
-    print('The recorded choice is now outside the 0.001 AP tolerance; review it before continuing')
+    print('Selected preprocessing is outside the predefined 0.001 AP tolerance.')
 
 # the shared code defaults must match the selected preprocessing
 import inspect
@@ -420,22 +449,24 @@ display(pd.DataFrame([selected_preprocessing]))
 # %% [markdown]
 # ## 10. Retention sensitivity
 #
-# We keep the chosen preprocessing, model settings and folds fixed, and add all three
-# retention fields together. The main result comes from the matching run above; only
-# the retention option changes in the new run. Paired AP differences compare the same
-# validation fold, with positive values favoring the retention input set.
+# We add the three retention fields together while keeping preprocessing, model settings
+# and validation folds fixed. Paired AP differences measure the change for the same
+# validation observations. Positive values favour the representation with retention
+# information.
 #
-# Retention stays outside the main information-group comparison because its availability
-# at prediction time is uncertain. An AP gain does not establish availability, leakage,
-# or a causal effect of retention offers on churn.
+# The retention fields remain outside the main analysis because their prediction-time
+# availability is uncertain. A predictive gain alone does not establish that they are
+# available before churn or that retention activity causes a change in churn.
 
 # %%
+# verify which predictors enter the retention comparison
 main_spec = get_feature_spec(all_groups)
 retention_spec = get_feature_spec(all_groups, include_retention=True)
 assert len(main_spec['raw_features']) == 53
 assert len(retention_spec['raw_features']) == 56
 assert set(retention_spec['raw_features']) - set(main_spec['raw_features']) == set(RETENTION_COLUMNS)
 
+# reuse the selected main representation and evaluate the retention representation
 main_results = preprocessing_fold_results[
     preprocessing_fold_results['model'] == selected_name
 ].copy()
@@ -452,6 +483,7 @@ with warnings.catch_warnings():
         retention_pipeline, X_train, y_train, shared_folds, name='With retention',
     )
 
+# match the same validation folds before calculating AP changes
 retention_comparison = main_results[['fold', 'average_precision']].merge(
     retention_results[['fold', 'average_precision']],
     on='fold',
@@ -463,29 +495,32 @@ retention_comparison['ap_difference'] = (
     - retention_comparison['average_precision_main']
 )
 display(retention_comparison.round(4))
-print(f"Mean AP without retention: {retention_comparison['average_precision_main'].mean():.4f}")
-print(f"Mean AP with retention: {retention_comparison['average_precision_retention'].mean():.4f}")
-print(f"Mean paired AP difference: {retention_comparison['ap_difference'].mean():+.4f}")
+main_retention_ap = retention_comparison['average_precision_main'].mean()
+with_retention_ap = retention_comparison['average_precision_retention'].mean()
+retention_ap_gain = retention_comparison['ap_difference'].mean()
+print(f"Mean AP without retention: {main_retention_ap:.4f}")
+print(f"Mean AP with retention: {with_retention_ap:.4f}")
+print(f"Mean paired AP difference: {retention_ap_gain:+.4f}")
 
 # %% [markdown]
-# On the committed training split, mean AP increased from 0.4269 to 0.4313, a paired
-# gain of 0.0045. Four folds improved and one declined, so the gain is not consistent
-# across every fold. This is a training-data sensitivity check, not a final test result.
+# Retention information increases mean AP from 0.4269 to 0.4313, with an unrounded mean
+# gain of approximately 0.0045. Four folds improve and one declines. The gain is therefore
+# small and not consistent across all folds.
 
 # %% [markdown]
-# ## 11. Logistic Regression (Shiqi)
+# ## 11. Logistic regression
 #
-# **Explanation:** Logistic Regression models the log-odds of churn as a weighted sum of the
-# prepared predictors. We use the fixed reference settings from section 9: the lbfgs solver,
-# L2 regularisation with C=1 and at most 2000 iterations. L2 regularisation shrinks the
-# weights towards zero, which keeps the many correlated and one-hot columns stable. The input
-# is the selected linear preprocessing (median age, target-encoded ServiceArea, log1p on
-# skewed counts, scaling of continuous values) on all six main information groups.
+# Logistic regression expresses churn log-odds as a weighted sum of the prepared
+# predictors. We use the fixed lbfgs model with L2 regularisation, C=1 and at most 2,000
+# iterations. L2 regularisation shrinks the fitted weights and limits their sensitivity
+# to correlated inputs.
 #
-# This configuration was already evaluated in section 9, so we reuse its fold scores and
-# out-of-fold predictions instead of fitting it again.
+# The model uses the selected linear preprocessing on all six main feature groups.
+# We reuse the scores and out-of-fold predictions obtained during preprocessing
+# evaluation, since the model and representation are identical.
 
 # %%
+# reuse the matching logistic regression scores and predictions
 logistic_results = main_results.copy()
 logistic_results['model'] = 'Logistic Regression'
 logistic_predictions = preprocessing_predictions[selected_name].copy()
@@ -510,38 +545,44 @@ logistic_comparison = pd.concat(
     [baseline_fold_results, logistic_results],
     ignore_index=True,
 )
-display(summarize_scores(logistic_comparison).round(4))
+logistic_comparison_summary = summarize_scores(logistic_comparison)
+display(logistic_comparison_summary.round(4))
 
 logistic_vs_tenure = paired_ap_difference(tenure_results, logistic_results)
 print('Logistic Regression minus fixed tenure rule, per fold:')
 display(logistic_vs_tenure.round(4))
 
-# %% [markdown]
-# **Results and interpretation:** On the committed training split, Logistic Regression
-# reached a mean AP of 0.4269 (fold standard deviation 0.0098), compared with 0.2882 for the
-# prior dummy, which equals churn prevalence, and 0.3133 for the fixed tenure rule. It beat
-# the tenure rule on every fold, by 0.10 to 0.12 AP. Combining all six information groups
-# therefore ranks churners clearly better than chance or the single tenure window.
-#
-# The same folds were used to choose the preprocessing, so 0.4269 is a development result,
-# not an independent estimate of final performance. Only fixed reference settings were used;
-# the regularisation strength C has not been tuned.
+# report performance from the current fold scores
+logistic_mean_ap = logistic_results['average_precision'].mean()
+logistic_fold_std = logistic_results['average_precision'].std()
+logistic_mean_difference = logistic_vs_tenure['ap_difference'].mean()
+logistic_performance_text = (
+    f"Logistic regression achieved mean AP {logistic_mean_ap:.4f} "
+    f"with fold standard deviation {logistic_fold_std:.4f}. "
+    f"The mean AP difference relative to the tenure rule was "
+    f"{logistic_mean_difference:+.4f}."
+)
+display(Markdown(logistic_performance_text))
 
 # %% [markdown]
-# ## 12. Naive Bayes (Shiqi)
+# Logistic regression improves ranking performance over both the prior dummy and the
+# fixed tenure rule. This indicates that the combined information groups contain
+# predictive information beyond prevalence and the single tenure window. The score
+# remains a development result because preprocessing was selected using these folds.
+
+# %% [markdown]
+# ## 12. Gaussian naive Bayes
 #
-# **Explanation:** Gaussian Naive Bayes estimates, for each churn class, a mean and variance
-# for every prepared column, and combines the columns as if they were independent within each
-# class. It has no regularisation or depth setting to choose; we keep scikit-learn's default
-# variance smoothing. The input is the same selected linear preprocessing as Logistic
-# Regression, so log1p and scaling make the skewed counts closer to the bell shape the model
-# assumes.
+# Gaussian naive Bayes estimates a mean and variance for each prepared column within
+# each churn class. It combines these distributions under an assumption of conditional
+# independence between predictors. We retain the default variance smoothing and use
+# the selected linear preprocessing.
 #
-# The shared preprocessing returns a sparse matrix because of one-hot encoding, but
-# GaussianNB needs a dense one. A small conversion step inside the model pipeline handles
-# this, so it is still fitted and applied fold by fold.
+# The estimator requires dense input. A conversion step within the model pipeline
+# changes the sparse prepared matrix to dense form after fold-specific preprocessing.
 
 # %%
+# prepare dense input for Gaussian naive Bayes
 from scipy import sparse
 from sklearn.naive_bayes import GaussianNB
 from sklearn.pipeline import Pipeline
@@ -569,13 +610,25 @@ naive_bayes_vs_logistic = paired_ap_difference(logistic_results, naive_bayes_res
 print('Naive Bayes minus Logistic Regression, per fold:')
 display(naive_bayes_vs_logistic.round(4))
 
+# report performance from the current fold scores
+naive_bayes_mean_ap = naive_bayes_results['average_precision'].mean()
+naive_bayes_fold_std = naive_bayes_results['average_precision'].std()
+naive_bayes_mean_difference = naive_bayes_vs_logistic['ap_difference'].mean()
+naive_bayes_performance_text = (
+    f"Gaussian naive Bayes achieved mean AP {naive_bayes_mean_ap:.4f} "
+    f"with fold standard deviation {naive_bayes_fold_std:.4f}. "
+    f"The mean AP difference relative to logistic regression was "
+    f"{naive_bayes_mean_difference:+.4f}."
+)
+display(Markdown(naive_bayes_performance_text))
+
 # %% [markdown]
-# Naive Bayes assumes that the predictors are independent within each churn class. The table
-# below checks this for the usage counts: it lists the most strongly correlated pairs, measured
-# separately among customers who stayed and among customers who churned. This is a
-# descriptive check on the training data only.
+# We examine the independence assumption using correlations between usage measurements
+# within each churn class. Strong within-class correlations provide evidence against
+# independence. This is a descriptive assessment of the training data.
 
 # %%
+# calculate usage correlations separately within each churn class
 usage_columns = MAIN_FEATURE_GROUPS['usage']
 class_correlations = {}
 for churn_value, label in [(0, 'stayed'), (1, 'churned')]:
@@ -590,41 +643,41 @@ for position, first in enumerate(usage_columns):
             'correlation_stayed': class_correlations['stayed'].loc[first, second],
             'correlation_churned': class_correlations['churned'].loc[first, second],
         })
-usage_correlations = pd.DataFrame(correlation_rows).set_index('pair')
-usage_correlations['strongest'] = usage_correlations.abs().min(axis=1)
+# arrange each unique pair as one table row
+usage_correlations = pd.DataFrame(correlation_rows)
+usage_correlations = usage_correlations.set_index('pair')
+# retain pairs whose correlations are large in both churn classes
+absolute_correlations = usage_correlations.abs()
+usage_correlations['strongest'] = absolute_correlations.min(axis=1)
 usage_correlations = usage_correlations.sort_values('strongest', ascending=False)
-display(usage_correlations.drop(columns='strongest').head(8).round(3))
+largest_correlations = usage_correlations.drop(columns='strongest').head(8)
+display(largest_correlations.round(3))
 strong_pairs = int((usage_correlations['strongest'] > 0.7).sum())
 print(f'Usage pairs with |correlation| > 0.7 in both classes: {strong_pairs} of {len(usage_correlations)}')
 
 # %% [markdown]
-# **Results and interpretation:** On the committed training split, Gaussian Naive Bayes
-# reached a mean AP of 0.3730 (fold standard deviation 0.0074). This is above the fixed
-# tenure rule (0.3133), but 0.054 AP below Logistic Regression on average, and lower on
-# every fold (by 0.045 to 0.063).
+# Gaussian naive Bayes improves on the tenure baseline but performs below logistic
+# regression on all five folds. Several usage measurements remain strongly correlated
+# within both classes, which conflicts with its independence assumption. For example,
+# MonthlyMinutes and ReceivedCalls have correlations of approximately 0.82.
 #
-# A likely reason is that its independence assumption is clearly violated. Eight of the 55
-# pairs of usage counts have correlations above 0.7 among both customers who stayed and those
-# who churned; for example, MonthlyMinutes and ReceivedCalls correlate at about 0.82. Naive
-# Bayes treats such columns as separate pieces of evidence, so the same information is
-# counted several times. Logistic Regression instead learns one weight per column jointly,
-# which can share the effect between correlated columns.
-#
-# We suggest keeping Naive Bayes in the report as a simple probabilistic model whose weaker
-# score illustrates this assumption, rather than removing it.
+# This dependence is a plausible explanation for weaker performance, although the
+# correlation assessment does not isolate its effect on AP. The model provides a simple
+# probabilistic comparison with the jointly fitted logistic regression model.
 
 # %% [markdown]
-# ## 13. Decision Tree (Shiqi)
+# ## 13. Decision tree
 #
-# **Explanation:** A decision tree splits customers step by step on single predictors, such
-# as "MonthsInService below some value", and predicts the churn share in each final group.
-# We fix the settings before looking at scores: at most 5 levels of splits (`max_depth=5`)
-# and at least 50 customers in every final group (`min_samples_leaf=50`). Both limits keep the
-# tree shallow and stop it from memorising small groups, so its rules stay readable. The
-# input is the selected tree preprocessing: the same imputation and encoding as for Logistic
-# Regression, but without log1p or scaling, because splits only depend on the order of values.
+# The decision tree divides customers through successive splits on individual
+# predictors and estimates churn prevalence within each terminal group. We fix the
+# maximum depth at 5 and require at least 50 customers per leaf. These constraints
+# limit small terminal groups and keep the decision structure relatively simple.
+#
+# The tree uses the selected imputation and encoding procedures without log
+# transformation or scaling. Its splits depend on the ordering of predictor values.
 
 # %%
+# define and evaluate the shallow decision tree
 from sklearn.tree import DecisionTreeClassifier
 
 decision_tree = DecisionTreeClassifier(
@@ -642,19 +695,35 @@ tree_vs_logistic = paired_ap_difference(logistic_results, tree_results)
 print('Decision Tree minus Logistic Regression, per fold:')
 display(tree_vs_logistic.round(4))
 
+# report performance from the current fold scores
+tree_mean_ap = tree_results['average_precision'].mean()
+tree_fold_std = tree_results['average_precision'].std()
+tree_mean_difference = tree_vs_logistic['ap_difference'].mean()
+tree_performance_text = (
+    f"The decision tree achieved mean AP {tree_mean_ap:.4f} "
+    f"with fold standard deviation {tree_fold_std:.4f}. "
+    f"The mean AP difference relative to logistic regression was "
+    f"{tree_mean_difference:+.4f}."
+)
+display(Markdown(tree_performance_text))
+
 # %% [markdown]
-# To see how much the depth limit matters, we also score depths 3 and 8 on the same folds.
-# This is a descriptive check: the chosen depth stays 5, so the check does not select
-# the model.
+# A depth sensitivity analysis compares depths 3, 5 and 8 using the same folds and
+# minimum leaf size. The reference depth remains 5; these additional scores describe
+# sensitivity rather than select a new model.
 
 # %%
+# evaluate depth sensitivity while reusing the depth-5 scores
 depth_results = []
 for depth in [3, 5, 8]:
     if depth == 5:
         depth_results.append(tree_results)
         continue
+    depth_model = DecisionTreeClassifier(
+        max_depth=depth, min_samples_leaf=50, random_state=RANDOM_STATE,
+    )
     depth_pipeline = make_model_pipeline(
-        DecisionTreeClassifier(max_depth=depth, min_samples_leaf=50, random_state=RANDOM_STATE),
+        depth_model,
         all_groups,
         model_kind='tree',
     )
@@ -662,14 +731,18 @@ for depth in [3, 5, 8]:
         depth_pipeline, X_train, y_train, shared_folds, name=f'Decision Tree (depth {depth})',
     )
     depth_results.append(results)
-display(summarize_scores(pd.concat(depth_results, ignore_index=True)).round(4))
+depth_fold_results = pd.concat(depth_results, ignore_index=True)
+depth_summary = summarize_scores(depth_fold_results)
+display(depth_summary.round(4))
 
 # %% [markdown]
-# To see what the tree uses, we fit it once on the training part of fold 1 and list the
-# predictors with the largest importance. Importance is the share of the total split
-# improvement that a predictor provides; it describes this one tree, not a causal effect.
+# We fit a tree on the training portion of the first fold to describe its structure.
+# Impurity importance measures the share of total split improvement assigned to each
+# prepared predictor. It describes this fitted tree and does not establish causality
+# or independent predictive value.
 
 # %%
+# fit one training-fold tree for descriptive inspection
 first_training_rows = shared_folds[0][0]
 inspected_tree = make_model_pipeline(decision_tree, all_groups, model_kind='tree')
 inspected_tree.fit(X_train.iloc[first_training_rows], y_train.iloc[first_training_rows])
@@ -679,68 +752,65 @@ tree_importance = pd.Series(
     index=tree_feature_names,
     name='importance',
 )
-tree_importance = tree_importance[tree_importance > 0].sort_values(ascending=False)
-display(tree_importance.head(10).round(3).to_frame())
+# retain the predictors used in at least one split
+used_by_tree = tree_importance > 0
+tree_importance = tree_importance[used_by_tree]
+tree_importance = tree_importance.sort_values(ascending=False)
+tree_importance_table = tree_importance.head(10).to_frame()
+display(tree_importance_table.round(3))
 print(f'Predictors used in at least one split: {len(tree_importance)} of {len(tree_feature_names)}')
 
 # %% [markdown]
-# **Results and interpretation:** On the committed training split, the depth-5 tree reached
-# a mean AP of 0.4066 (fold standard deviation 0.0086). It is well above the tenure rule
-# (0.3133) and Naive Bayes (0.3730), but 0.020 AP below Logistic Regression on average and
-# lower on every fold.
+# The depth-5 tree performs above the tenure and naive Bayes models but below logistic
+# regression on every fold. The deeper sensitivity model improves AP, indicating that
+# the depth limit affects predictive performance.
 #
-# The depth check shows that the limit matters: depth 3 reached 0.3725 and depth 8 reached
-# 0.4166. A single shallow tree cannot express many combinations of predictors, which is the
-# gap that Random Forest and Gradient Boosting (sections 14 and 15) are designed to close.
-# We keep depth 5 as the fixed initial setting; any tuning should be decided together with
-# those models.
-#
-# The tree fitted on fold 1 used only 18 of 115 prepared columns. Equipment age
-# (CurrentEquipmentDays) gave about a third of the total split improvement, followed by the
-# engineered usage change (RelChangeMinutes), tenure (MonthsInService), the missing-change
-# indicator and the 11-12 month window (ContractWindow). These importances describe one tree
-# and show association with churn, not cause.
+# The inspected tree uses a small subset of the prepared predictors. Equipment age,
+# relative usage change and tenure account for substantial split improvement. These
+# importances describe one fitted structure and may favour measurements with many
+# distinct values.
 
 # %% [markdown]
-# ### Summary of the models so far
+# ### Comparison of the first three classifiers
 #
-# All models below use the same five folds. Out-of-fold predictions for every model are
-# collected in `model_predictions` for the later threshold and segment analysis.
+# The baseline and classifier scores share the same validation folds. We combine their
+# scores and customer-level predictions to maintain a consistent format across models.
 
 # %%
+# combine the available classifier and baseline scores
 model_fold_results = pd.concat(
     [baseline_fold_results, logistic_results, naive_bayes_results, tree_results],
     ignore_index=True,
 )
-display(summarize_scores(model_fold_results).sort_values('mean_ap', ascending=False).round(4))
+initial_model_summary = summarize_scores(model_fold_results)
+initial_model_summary = initial_model_summary.sort_values('mean_ap', ascending=False)
+display(initial_model_summary.round(4))
 
+# combine customer scores before attaching identifiers
+baseline_scores = baseline_predictions.drop(columns='CustomerID')
 model_predictions = pd.concat([
-    baseline_predictions.drop(columns='CustomerID'),
+    baseline_scores,
     logistic_predictions,
     naive_bayes_predictions,
     tree_predictions,
-]).join(train[['CustomerID']])
-assert model_predictions.groupby('model').size().eq(len(train)).all()
+])
+model_predictions = model_predictions.join(train[['CustomerID']])
+model_prediction_counts = model_predictions.groupby('model').size()
+assert model_prediction_counts.eq(len(train)).all()
 
 # %% [markdown]
-# ## 14. Random Forest (Yan-Ru)
+# ## 14. Random forest
 #
-# Fit an initial Random Forest using the selected preprocessing and shared folds. A forest
-# combines predictions from multiple trees to reduce dependence on any one tree.
+# The random forest averages 300 decision trees fitted to random samples of customers.
+# Each split considers a random subset of predictors. These two sources of variation
+# reduce dependence on the structure of any single tree.
 #
-# **Explanation:** A Random Forest averages many decision trees. Each tree is fitted on a
-# random resample of the training customers, and at every split it may only choose from a
-# random subset of the columns. The trees therefore differ from each other, and their errors
-# partly cancel when the predictions are averaged. We fix the settings before looking at
-# scores: 300 trees (more trees mainly add run time), at least 20 customers in every final
-# group (`min_samples_leaf=20`), which stops single trees from memorising individual
-# customers, and the square root of the number of columns tried at each split
-# (`max_features='sqrt'`). There is no depth limit, because averaging many trees already
-# reduces the instability of a single deep tree. The input is the selected tree
-# preprocessing: the same imputation and encoding as for Logistic Regression, but without
-# log1p or scaling.
+# We require at least 20 customers per leaf and consider the square root of the number
+# of prepared predictors at each split. Tree depth is unrestricted. The input uses
+# the selected tree preprocessing without log transformation or scaling.
 
 # %%
+# define and evaluate the random forest
 from sklearn.ensemble import RandomForestClassifier
 
 random_forest = RandomForestClassifier(
@@ -760,13 +830,25 @@ forest_vs_logistic = paired_ap_difference(logistic_results, forest_results)
 print('Random Forest minus Logistic Regression, per fold:')
 display(forest_vs_logistic.round(4))
 
+# report performance from the current fold scores
+forest_mean_ap = forest_results['average_precision'].mean()
+forest_fold_std = forest_results['average_precision'].std()
+forest_mean_difference = forest_vs_logistic['ap_difference'].mean()
+forest_performance_text = (
+    f"The random forest achieved mean AP {forest_mean_ap:.4f} "
+    f"with fold standard deviation {forest_fold_std:.4f}. "
+    f"The mean AP difference relative to logistic regression was "
+    f"{forest_mean_difference:+.4f}."
+)
+display(Markdown(forest_performance_text))
+
 # %% [markdown]
-# To see what the forest uses, we fit it once on the training part of fold 1 and list the
-# predictors with the largest importance. Importance is the share of the total split
-# improvement that a predictor provides, averaged over all trees. It describes this one
-# forest and shows association with churn, not cause.
+# We inspect a forest fitted on the training portion of the first fold. Predictor
+# importance is the average impurity reduction across its trees. The table describes
+# which prepared inputs contribute to splits in this fitted forest.
 
 # %%
+# fit one training-fold forest for descriptive inspection
 first_training_rows = shared_folds[0][0]
 inspected_forest = make_model_pipeline(random_forest, all_groups, model_kind='tree')
 inspected_forest.fit(X_train.iloc[first_training_rows], y_train.iloc[first_training_rows])
@@ -775,34 +857,37 @@ forest_importance = pd.Series(
     inspected_forest.named_steps['model'].feature_importances_,
     index=forest_feature_names,
     name='importance',
-).sort_values(ascending=False)
-display(forest_importance.head(10).round(3).to_frame())
-print(f'Predictors with importance above zero: {int((forest_importance > 0).sum())} of {len(forest_importance)}')
+)
+forest_importance = forest_importance.sort_values(ascending=False)
+forest_importance_table = forest_importance.head(10).to_frame()
+display(forest_importance_table.round(3))
+used_by_forest = int((forest_importance > 0).sum())
+print(f'Predictors with positive importance: {used_by_forest} of {len(forest_importance)}')
 
 # %% [markdown]
-# **Results and interpretation:** Compare the forest with Logistic Regression using
-# the paired fold table above. A higher AP means better ranking of churners. The settings
-# are fixed starting values; we have not tuned them. These are development scores.
-#
-# The importance table describes splits in one fitted forest. Columns with many distinct
-# values can receive more importance, so positive importance does not prove that a column
-# helps on new customers. It also does not show cause and effect.
+# The forest improves AP over logistic regression on every fold, supporting the value
+# of a model that captures nonlinear relationships and interactions. Impurity
+# importance remains descriptive: columns with many distinct values can receive
+# larger values, and positive importance does not establish a contribution on new data.
 
 # %% [markdown]
-# ## 15. Gradient Boosting (Yan-Ru)
+# ## 15. Gradient boosting
 #
-# Gradient Boosting builds small trees in sequence. Each new tree tries to improve the
-# predictions made so far. We keep the submitted settings: learning rate 0.05, at most
-# 300 rounds, at most 15 leaves per tree, and at least 50 customers per leaf.
+# Gradient boosting builds small trees sequentially, with each tree improving the
+# current predictions. We use a learning rate of 0.05, at most 300 rounds, at most
+# 15 leaves per tree and at least 50 customers per leaf.
 #
-# Early stopping uses a separate 10% sample from each outer training fold and stops
-# after 20 rounds without improvement in log loss. The stopping sample is separated
-# BEFORE any preprocessing is fitted. Its labels cannot affect target encoding, medians
-# or other fitted preparation steps. The outer validation fold is used only for scoring.
-# The wrapper also converts the prepared matrices to the dense format this model needs.
-# We retain the internal fitting model after stopping; we do not refit it on the 10% sample.
+# A stratified 10% sample of each outer training fold is reserved for early stopping
+# before any preprocessing is fitted. Preprocessing uses only the remaining fitting
+# rows. The stopping sample is transformed using those fitted operations, and stopping
+# occurs after 20 rounds without improvement in log loss. The outer validation fold
+# is used only for AP evaluation.
+#
+# Prepared inputs are converted to dense form for the estimator. The fitted model is
+# retained after stopping; the stopping observations are not used for a further refit.
 
 # %%
+# define and evaluate gradient boosting with a separate stopping sample
 from sklearn.ensemble import HistGradientBoostingClassifier
 
 gradient_boosting = HistGradientBoostingClassifier(
@@ -827,231 +912,337 @@ display(boosting_vs_logistic.round(4))
 print('Gradient Boosting minus Random Forest, per fold:')
 display(boosting_vs_forest.round(4))
 
+# report performance from the current fold scores
+boosting_mean_ap = boosting_results['average_precision'].mean()
+boosting_fold_std = boosting_results['average_precision'].std()
+boosting_mean_difference = boosting_vs_forest['ap_difference'].mean()
+boosting_performance_text = (
+    f"Gradient boosting achieved mean AP {boosting_mean_ap:.4f} "
+    f"with fold standard deviation {boosting_fold_std:.4f}. "
+    f"The mean AP difference relative to the random forest was "
+    f"{boosting_mean_difference:+.4f}."
+)
+display(Markdown(boosting_performance_text))
+
 # %% [markdown]
-# Inspect early stopping on the training part of fold 1. The fitting and stopping
-# rows below are both inside that outer training fold.
+# We examine the first outer training fold to record the number of boosting rounds
+# and the sizes of its internal fitting and stopping samples.
 
 # %%
+# inspect the internal fitting and stopping samples in the first outer fold
 first_training_rows = shared_folds[0][0]
 inspected_boosting = make_early_stopping_pipeline(gradient_boosting, all_groups)
 inspected_boosting.fit(X_train.iloc[first_training_rows], y_train.iloc[first_training_rows])
 used_rounds = inspected_boosting.estimator_.n_iter_
 print(f'Boosting rounds used on fold 1 (maximum 300): {used_rounds}')
-print(f'Internal fitting rows: {len(inspected_boosting.fitting_rows_)}; '
-      f'separate stopping rows: {len(inspected_boosting.stopping_rows_)}')
+internal_fitting_count = len(inspected_boosting.fitting_rows_)
+internal_stopping_count = len(inspected_boosting.stopping_rows_)
+print(f'Internal fitting rows: {internal_fitting_count}; stopping rows: {internal_stopping_count}')
 
 # %% [markdown]
-# **Results and interpretation:** The tables below show the current run. Small differences
-# between the two tree ensembles should be interpreted carefully. The same development
-# folds have helped us choose preprocessing and compare models. They do not provide a
-# final independent performance estimate. The final test set remains reserved.
+# The combined model table compares mean AP and fold variation across all baselines
+# and classifiers. Gradient boosting and random forest provide the strongest
+# development scores. Their smaller performance difference requires more cautious
+# interpretation than their larger gains over logistic regression.
+#
+# Preprocessing and model comparison use the same development folds. The reported
+# scores therefore do not provide an independent estimate of final model performance.
 
 # %%
+# summarise all classifier and baseline scores
 model_fold_results = pd.concat(
     [baseline_fold_results, logistic_results, naive_bayes_results, tree_results,
      forest_results, boosting_results], ignore_index=True,
 )
-model_summary = summarize_scores(model_fold_results).sort_values('mean_ap', ascending=False)
+model_summary = summarize_scores(model_fold_results)
+model_summary = model_summary.sort_values('mean_ap', ascending=False)
 display(model_summary.round(4))
-print(f"Random Forest mean AP: {model_summary.loc['Random Forest (300 trees)', 'mean_ap']:.4f}")
-print(f"Gradient Boosting mean AP: {model_summary.loc['Gradient Boosting (HistGB)', 'mean_ap']:.4f}")
+forest_mean_ap = model_summary.loc['Random Forest (300 trees)', 'mean_ap']
+boosting_mean_ap = model_summary.loc['Gradient Boosting (HistGB)', 'mean_ap']
+print(f'Random Forest mean AP: {forest_mean_ap:.4f}')
+print(f'Gradient Boosting mean AP: {boosting_mean_ap:.4f}')
 
+# retain one score per model and customer in the training-row order
+baseline_scores = baseline_predictions.drop(columns='CustomerID')
 model_predictions = pd.concat([
-    baseline_predictions.drop(columns='CustomerID'),
+    baseline_scores,
     logistic_predictions, naive_bayes_predictions, tree_predictions,
     forest_predictions, boosting_predictions,
-]).join(train[['CustomerID']])
-assert model_predictions.groupby('model').size().eq(len(train)).all()
+])
+model_predictions = model_predictions.join(train[['CustomerID']])
+model_prediction_counts = model_predictions.groupby('model').size()
+assert model_prediction_counts.eq(len(train)).all()
 assert model_predictions['churn_score'].notna().all()
 
 # %% [markdown]
-# ## 16. Information-group comparison (Kaustubh)
+# ## 16. Information-group comparison
 #
-# We keep the same background information and compare ALL EIGHT combinations of usage,
-# usage change and service quality. Every combination uses the same five outer folds.
-# Gradient Boosting is the nonlinear model; Logistic Regression is a second check.
-# Each model keeps its settings and preprocessing rules fixed across combinations.
-# The full-model result is reused from above, so each other combination is fitted once.
+# We evaluate all eight combinations of usage, usage change and service quality while
+# retaining the account, demographic and handset background. Gradient boosting and
+# logistic regression provide nonlinear and linear comparisons. Each model retains
+# the same settings, preprocessing rules and validation folds across combinations.
 #
-# We ask three different questions for each group:
-# - Add to baseline: how much does it help when no other behavioural group is present?
-# - Remove from full: how much AP do we lose when it is removed and the model is retrained?
-# - Mean over orders: how much does it add on average across all six possible orders?
+# For each group, we calculate three AP contributions. The gain when added alone
+# measures improvement over the background. The loss when removed from the full model
+# measures its contribution when the other groups are available. The average gain
+# across all six addition orders distributes the full-minus-background improvement
+# between the groups, accounting for the different information already available.
+# This last measure is a Shapley allocation of the measured AP gain.
 #
-# The last calculation is a Shapley allocation of the full-minus-baseline AP gain.
-# It reuses the eight scores: it does not fit six more sets of models. The order-gain
-# table also shows whether a group's contribution changes with the groups already present.
-# The original fixed order remains below as an illustration, not as a general ranking.
-#
-# These questions differ: a group may be useful alone but replaceable by other groups.
-# Groups may also be more useful together. This compares only the three extra groups;
-# it does not rank the fixed account, demographic or handset groups.
+# The six-order calculations reuse the eight fitted combinations. A fixed sequence
+# of usage, usage change and service quality also provides a sequential comparison.
+# These analyses rank the three behavioural groups conditional on the background,
+# model, metric and feature definitions.
 
 # %%
+# label the behavioural groups in the result tables
 group_labels = {
     'usage': 'usage',
     'usage_change_retention': 'usage change',
     'service_quality': 'service quality',
 }
 
-
-def run_group_comparison(pipeline_factory, full_results):
-    fold_results = []
+# match the sequential group sets to the eight evaluated configurations
+fixed_order_names = []
+for sequential_groups in feature_configurations.values():
     for name, groups in feature_subset_configurations.items():
-        if name == 'full':
-            results = full_results.copy()
-            results['model'] = name
-        else:
-            results, _ = evaluate_classifier(
-                pipeline_factory(groups), X_train, y_train, shared_folds, name=name,
-            )
-        fold_results.append(results)
-    fold_results = pd.concat(fold_results, ignore_index=True)
-    contributions, order_gains = group_contributions(
-        fold_results, feature_subset_configurations, baseline_groups, addition_order,
-    )
-    return fold_results, contributions, order_gains
+        if set(groups) == set(sequential_groups):
+            fixed_order_names.append(name)
 
-
-def fixed_order_gains(fold_results):
-    ap = fold_results.pivot(index='fold', columns='model', values='average_precision')
-    subset_names = {frozenset(groups): name
-                    for name, groups in feature_subset_configurations.items()}
-    names = [subset_names[frozenset(groups)] for groups in feature_configurations.values()]
-    gains = ap[names].diff(axis=1).iloc[:, 1:]
-    gains.columns = [group_labels[group] for group in addition_order]
-    return gains
-
-
-def show_group_comparison(fold_results, contributions, order_gains):
-    summary = summarize_scores(fold_results).reindex(feature_subset_configurations)
-    display(summary.round(4))
-    print('Paired AP contributions (means across five folds):')
-    contribution_summary = summarize_contributions(contributions).rename(index=group_labels)
-    display(contribution_summary.round(4))
-    print('Original fixed order: usage -> usage change -> service quality')
-    display(fixed_order_gains(fold_results).round(4))
-    order_means = order_gains.groupby(['order', 'group'], sort=False)['ap_gain'].mean().unstack()
-    print('Mean AP gain in each of the six addition orders:')
-    display(order_means.rename(columns=group_labels).round(4))
-    strongest = contribution_summary['mean_over_orders'].idxmax()
-    print(f'Largest average contribution in this run: {strongest}.')
-    print('This is conditional on the background, model, metric and feature definitions.')
-    return summary, contribution_summary
-
-
-boosting_group_results, boosting_contributions, boosting_order_gains = run_group_comparison(
-    lambda groups: make_early_stopping_pipeline(gradient_boosting, groups), boosting_results,
-)
-boosting_summary, boosting_contribution_summary = show_group_comparison(
-    boosting_group_results, boosting_contributions, boosting_order_gains,
-)
-
-# %% [markdown]
-# Repeat the same eight combinations with Logistic Regression. Agreement between two
-# different model types makes a result more convincing; disagreement is also useful to report.
+fixed_order_labels = []
+for group in addition_order:
+    fixed_order_labels.append(group_labels[group])
 
 # %%
-logistic_group_results, logistic_contributions, logistic_order_gains = run_group_comparison(
-    lambda groups: make_model_pipeline(logistic_model, groups, model_kind='linear'),
-    logistic_results,
-)
-logistic_summary, logistic_contribution_summary = show_group_comparison(
-    logistic_group_results, logistic_contributions, logistic_order_gains,
-)
+# evaluate every behavioural combination with gradient boosting
+boosting_group_runs = []
+for name, groups in feature_subset_configurations.items():
+    if name == 'full':
+        # reuse the full-model evaluation on the same folds
+        group_results = boosting_results.copy()
+        group_results['model'] = name
+    else:
+        # fit preprocessing and the model separately within every fold
+        group_pipeline = make_early_stopping_pipeline(gradient_boosting, groups)
+        group_results, _ = evaluate_classifier(
+            group_pipeline, X_train, y_train, shared_folds, name=name,
+        )
+    boosting_group_runs.append(group_results)
 
-# %% [markdown]
-# **Results and interpretation:** Read the generated tables above rather than a copied
-# score from an older run. Compare each group's gain alone, its removal loss and its
-# average contribution. A small removal loss can mean another group provides similar
-# information; it does not establish that the removed group contains no useful information.
-#
-# Calculated features enter only when all parent groups are present. Their benefit is
-# therefore part of the group comparison and can be shared between their parent groups
-# in the average-over-orders calculation. This is not a comparison of raw columns alone.
-#
-# The average gains add up to the full-model AP minus baseline AP on every fold.
-# Fold variation and model disagreement should be reported. Standard deviations are
-# descriptive, not confidence intervals or significance tests. A ranking on this dataset
-# is not a universal ranking, and predictive improvement does not prove cause and effect.
-#
-# If a combination is chosen because it scores best here, its score is a development
-# score. Fix the final choices before using the reserved test set. Do not search for an
-# addition order that makes a preferred group look strongest.
-#
-# Method background: [Grouped Feature Importance](https://arxiv.org/abs/2104.11688).
-
-# %% [markdown]
-# ## 17. Error analysis by customer segment (Kaustubh)
-#
-# Choose a decision threshold using out-of-fold training predictions. A threshold converts
-# risk scores into churn flags. Then count false negatives, meaning actual churners who were
-# not flagged, within each tenure and spending segment. Keep test outcomes reserved.
-#
-# **Explanation:** We use the learned model with the highest mean development AP.
-# Each customer has a score from an outer-fold model that was not fitted on that customer.
-# We choose the threshold with the highest F1, which balances precision and recall.
-# Equal best F1 values choose the lower threshold, which finds at least as many churners.
-# This threshold is chosen and described on the same outcomes, so this is exploratory.
-# A separate sensitivity check flags at most 20% of customers by score. Equal scores
-# are ordered by CustomerID so that the contact budget is respected.
-#
-# The segments combine four tenure bands (up to 10 months, 11-12 months, 13-24 months, over
-# 24 months) with three spending groups, defined as terciles of MonthlyRevenue (low, middle,
-# high). Customers with missing MonthlyRevenue form a separate group. The 11-12 month band
-# follows the window found in the exploration and used in the tenure rule. The segments were
-# fixed before the false negatives were counted. For each segment we report its size, its
-# churners, its missed churners, its share of all missed churners, and its miss rate, which
-# is the missed churners divided by the churners in the segment.
+# summarise AP for the eight combinations in their defined order
+boosting_group_results = pd.concat(boosting_group_runs, ignore_index=True)
+boosting_summary = summarize_scores(boosting_group_results)
+boosting_summary = boosting_summary.reindex(feature_subset_configurations)
+display(boosting_summary.round(4))
 
 # %%
+# calculate each group's value alone, in the full model and across all orders
+boosting_contributions, boosting_order_gains = group_contributions(
+    boosting_group_results, feature_subset_configurations, baseline_groups, addition_order,
+)
+boosting_contribution_summary = summarize_contributions(boosting_contributions)
+boosting_contribution_summary = boosting_contribution_summary.rename(index=group_labels)
+display(boosting_contribution_summary.round(4))
+
+# calculate paired gains along the fixed usage-to-service-quality sequence
+boosting_fold_ap = boosting_group_results.pivot(
+    index='fold', columns='model', values='average_precision',
+)
+boosting_sequential_ap = boosting_fold_ap[fixed_order_names]
+boosting_sequential_gains = boosting_sequential_ap.diff(axis=1)
+boosting_sequential_gains = boosting_sequential_gains.iloc[:, 1:]
+boosting_sequential_gains.columns = fixed_order_labels
+print('Gradient boosting: AP gains in the fixed addition order')
+display(boosting_sequential_gains.round(4))
+
+# %%
+# average each addition-order gain across the same five validation folds
+boosting_order_groups = boosting_order_gains.groupby(['order', 'group'], sort=False)
+boosting_order_means = boosting_order_groups['ap_gain'].mean()
+boosting_order_means = boosting_order_means.unstack()
+boosting_order_means = boosting_order_means.rename(columns=group_labels)
+print('Gradient boosting: mean AP gains in all six addition orders')
+display(boosting_order_means.round(4))
+
+# report the largest average contribution from the current results
+boosting_mean_contributions = boosting_contribution_summary['mean_over_orders']
+boosting_leading_group = boosting_mean_contributions.idxmax()
+boosting_leading_gain = boosting_mean_contributions.max()
+boosting_contribution_text = (
+    f"For gradient boosting, {boosting_leading_group} had the largest average "
+    f"contribution across addition orders, with AP gain {boosting_leading_gain:.4f}."
+)
+display(Markdown(boosting_contribution_text))
+
+# %% [markdown]
+# We apply the same group comparisons to logistic regression. Agreement between the
+# linear and nonlinear models supports consistency across these modelling choices.
+# Disagreement indicates that measured group value depends on the model.
+
+# %%
+# evaluate every behavioural combination with logistic regression
+logistic_group_runs = []
+for name, groups in feature_subset_configurations.items():
+    if name == 'full':
+        # reuse the full-model evaluation on the same folds
+        group_results = logistic_results.copy()
+        group_results['model'] = name
+    else:
+        # fit preprocessing and the model separately within every fold
+        group_pipeline = make_model_pipeline(logistic_model, groups, model_kind='linear')
+        group_results, _ = evaluate_classifier(
+            group_pipeline, X_train, y_train, shared_folds, name=name,
+        )
+    logistic_group_runs.append(group_results)
+
+# summarise AP for the eight combinations in their defined order
+logistic_group_results = pd.concat(logistic_group_runs, ignore_index=True)
+logistic_summary = summarize_scores(logistic_group_results)
+logistic_summary = logistic_summary.reindex(feature_subset_configurations)
+display(logistic_summary.round(4))
+
+# %%
+# calculate each group's value alone, in the full model and across all orders
+logistic_contributions, logistic_order_gains = group_contributions(
+    logistic_group_results, feature_subset_configurations, baseline_groups, addition_order,
+)
+logistic_contribution_summary = summarize_contributions(logistic_contributions)
+logistic_contribution_summary = logistic_contribution_summary.rename(index=group_labels)
+display(logistic_contribution_summary.round(4))
+
+# calculate paired gains along the fixed usage-to-service-quality sequence
+logistic_fold_ap = logistic_group_results.pivot(
+    index='fold', columns='model', values='average_precision',
+)
+logistic_sequential_ap = logistic_fold_ap[fixed_order_names]
+logistic_sequential_gains = logistic_sequential_ap.diff(axis=1)
+logistic_sequential_gains = logistic_sequential_gains.iloc[:, 1:]
+logistic_sequential_gains.columns = fixed_order_labels
+print('Logistic regression: AP gains in the fixed addition order')
+display(logistic_sequential_gains.round(4))
+
+# %%
+# average each addition-order gain across the same five validation folds
+logistic_order_groups = logistic_order_gains.groupby(['order', 'group'], sort=False)
+logistic_order_means = logistic_order_groups['ap_gain'].mean()
+logistic_order_means = logistic_order_means.unstack()
+logistic_order_means = logistic_order_means.rename(columns=group_labels)
+print('Logistic regression: mean AP gains in all six addition orders')
+display(logistic_order_means.round(4))
+
+# report the largest average contribution from the current results
+logistic_mean_contributions = logistic_contribution_summary['mean_over_orders']
+logistic_leading_group = logistic_mean_contributions.idxmax()
+logistic_leading_gain = logistic_mean_contributions.max()
+logistic_contribution_text = (
+    f"For logistic regression, {logistic_leading_group} had the largest average "
+    f"contribution across addition orders, with AP gain {logistic_leading_gain:.4f}."
+)
+display(Markdown(logistic_contribution_text))
+
+# %% [markdown]
+# Usage has the largest average contribution in both models. Usage change has a
+# similar contribution in gradient boosting, while service quality contributes less.
+# The sequential comparison attributes the largest gradient-boosting gain to usage
+# change when it follows usage. This difference illustrates why a single addition
+# order does not determine a general group ranking.
+#
+# Calculated features enter when all their parent groups are present. Their predictive
+# value is included in the group comparisons and can be shared between parent groups
+# in the average-over-orders allocation. The analysis therefore assesses groups with
+# their eligible calculated features.
+#
+# The average group gains sum to full-model AP minus background AP on each fold.
+# Small removal losses can reflect overlapping information, even when a group is
+# useful alone. Fold variation and model differences describe uncertainty in the
+# development results. The rankings do not establish universal importance or causality.
+
+# %% [markdown]
+# ## 17. Error analysis by customer segment
+#
+# We select the classifier with the highest mean development AP and use its out-of-fold
+# scores for threshold and error analysis. The decision threshold maximises F1, which
+# combines precision and recall. If several thresholds have the same best F1, the
+# lowest threshold is selected, preserving the highest recall among the tied choices.
+#
+# Tenure is divided into up to 10 months, 11–12 months, 13–24 months and over 24 months.
+# MonthlyRevenue is divided into three approximately equal spending groups. Missing
+# tenure or revenue receives a separate unknown category. The tenure window follows
+# the pattern identified during exploration.
+#
+# For each tenure-by-spending segment, we report customer count, churner count, missed
+# churners, share of all missed churners and miss rate. The miss rate is the proportion
+# of actual churners in that segment who are not flagged.
+
+# %%
+# select the learned classifier with the highest mean development AP
 learned_results = pd.concat([
     logistic_results, naive_bayes_results, tree_results, forest_results, boosting_results,
 ], ignore_index=True)
-analysis_model = summarize_scores(learned_results)['mean_ap'].idxmax()
+learned_model_summary = summarize_scores(learned_results)
+analysis_model = learned_model_summary['mean_ap'].idxmax()
 print(f'Development model selected for segment analysis: {analysis_model}')
-oof = model_predictions[model_predictions['model'] == analysis_model]
+# retain the selected model's scores and verify their customer alignment
+selected_model_rows = model_predictions['model'] == analysis_model
+oof = model_predictions[selected_model_rows]
 assert len(oof) == len(train) and oof.index.equals(train.index)
 
+# choose the development threshold and convert scores to churn flags
 threshold, best_f1 = select_f1_threshold(oof['y_true'], oof['churn_score'])
 
 flagged = oof['churn_score'] >= threshold
 churned = oof['y_true'] == 1
+# count the four prediction outcomes
 true_positives = int((flagged & churned).sum())
 false_positives = int((flagged & ~churned).sum())
 false_negatives = int((~flagged & churned).sum())
 true_negatives = int((~flagged & ~churned).sum())
 
+# calculate precision, recall and the proportion selected for contact
+selected_precision = true_positives / (true_positives + false_positives)
+selected_recall = true_positives / (true_positives + false_negatives)
+flagged_share = flagged.mean()
+
 threshold_summary = pd.DataFrame([{
     'threshold': threshold,
     'flagged_customers': int(flagged.sum()),
-    'flagged_share': flagged.mean(),
-    'precision': true_positives / (true_positives + false_positives),
-    'recall': true_positives / (true_positives + false_negatives),
+    'flagged_share': flagged_share,
+    'precision': selected_precision,
+    'recall': selected_recall,
     'f1': best_f1,
     'false_negatives': false_negatives,
 }])
 display(threshold_summary.round(4))
 
 # %%
+# define tenure and spending segments for the training customers
 segments = train[['MonthsInService', 'MonthlyRevenue']].copy()
 segments['tenure'] = pd.cut(
     segments['MonthsInService'],
     bins=[-np.inf, 10, 12, 24, np.inf],
     labels=['up to 10 months', '11-12 months', '13-24 months', 'over 24 months'],
 )
-segments['tenure'] = segments['tenure'].cat.add_categories('unknown tenure').fillna('unknown tenure')
+# retain missing tenure as a separate segment
+segments['tenure'] = segments['tenure'].cat.add_categories('unknown tenure')
+segments['tenure'] = segments['tenure'].fillna('unknown tenure')
 segments['spending'] = pd.qcut(
     segments['MonthlyRevenue'], q=3, labels=['low spend', 'middle spend', 'high spend'],
 )
-segments['spending'] = segments['spending'].cat.add_categories('unknown spend').fillna('unknown spend')
+# retain missing spending as a separate segment
+segments['spending'] = segments['spending'].cat.add_categories('unknown spend')
+segments['spending'] = segments['spending'].fillna('unknown spend')
 
 
 def missed_by_segment(flagged):
     """count customers, churners and missed churners in each tenure and spending segment"""
-    table = segments.assign(flagged=flagged.to_numpy(), churned=oof['y_true'].to_numpy())
+    # attach flags and outcomes after the row-alignment check
+    table = segments.copy()
+    table['flagged'] = flagged.to_numpy()
+    table['churned'] = oof['y_true'].to_numpy()
     table['missed'] = (table['churned'] == 1) & ~table['flagged']
-    grouped = table.groupby(['tenure', 'spending'], observed=True).agg(
+    # count customers, churners and false negatives in each segment
+    segment_groups = table.groupby(['tenure', 'spending'], observed=True)
+    grouped = segment_groups.agg(
         customers=('churned', 'size'),
         churners=('churned', 'sum'),
         missed=('missed', 'sum'),
@@ -1063,7 +1254,9 @@ def missed_by_segment(flagged):
 
 def missed_by_tenure(table):
     """roll the segment table up to the four tenure bands"""
-    rollup = table.groupby('tenure', observed=True)[['customers', 'churners', 'missed']].sum()
+    count_columns = ['customers', 'churners', 'missed']
+    tenure_groups = table.groupby('tenure', observed=True)
+    rollup = tenure_groups[count_columns].sum()
     rollup['missed_share'] = rollup['missed'] / rollup['missed'].sum()
     rollup['miss_rate'] = rollup['missed'] / rollup['churners']
     return rollup
@@ -1074,50 +1267,60 @@ assert missed_table['missed'].sum() == false_negatives
 assert missed_table['customers'].sum() == len(train)
 display(missed_table.round(3))
 print('Rolled up by tenure band:')
-display(missed_by_tenure(missed_table).round(3))
+tenure_misses = missed_by_tenure(missed_table)
+display(tenure_misses.round(3))
 
 # %% [markdown]
-# Sensitivity check: select floor(20% * customer count) customers with the highest
-# scores. CustomerID breaks ties. This respects a strict contact budget.
+# A contact-budget sensitivity analysis selects the highest-scoring 20% of customers,
+# rounding the customer count down. CustomerID provides a stable ordering for tied
+# scores. This policy measures errors under a fixed contact capacity.
 
 # %%
+# select customers under the fixed contact budget
 top_fraction = 0.20
 top_flagged = flag_top_fraction(oof['churn_score'], train['CustomerID'], top_fraction)
-assert int(top_flagged.sum()) == int(np.floor(len(train) * top_fraction))
+contact_budget = int(np.floor(len(train) * top_fraction))
+flagged_customer_count = int(top_flagged.sum())
+assert flagged_customer_count == contact_budget
 top_missed_table = missed_by_segment(top_flagged)
+# calculate recall and the tenure distribution under the contact budget
 top_recall = 1 - top_missed_table['missed'].sum() / churned.sum()
-print(f'Top {top_fraction:.0%} rule: {int(top_flagged.sum())} customers flagged, recall {top_recall:.3f}')
+print(f'Top {top_fraction:.0%} rule: {flagged_customer_count} customers flagged, recall {top_recall:.3f}')
 display(top_missed_table.head(5).round(3))
 print('Top 20% rule, rolled up by tenure band:')
-display(missed_by_tenure(top_missed_table).round(3))
+top_tenure_misses = missed_by_tenure(top_missed_table)
+display(top_tenure_misses.round(3))
 print('Max-F1 rule, top 5 segments for comparison:')
 display(missed_table.head(5).round(3))
 
 # %% [markdown]
-# **Results and interpretation:** The generated tables show the current threshold,
-# contact rate and missed churners. The largest number of misses and the highest miss
-# rate answer different questions: large groups can contain many misses even when their
-# miss rate is low. Compare a group's share of misses with its share of actual churners.
-# Small cells, especially unknown-spending groups, may be too small for firm conclusions.
+# Miss counts and miss rates describe different aspects of model errors. Large
+# segments can contain many missed churners even when their miss rate is relatively
+# low. Comparing a segment's share of missed churners with its share of actual churners
+# helps distinguish group size from a disproportionate concentration of errors.
+# Small segments, particularly those with unknown spending, provide limited evidence.
 
 # %%
+# compare the distribution of missed churners with the distribution of all churners
 tenure_results_table = missed_by_tenure(missed_table)
 tenure_results_table['share_of_churners'] = tenure_results_table['churners'] / churned.sum()
 display(tenure_results_table.round(3))
-print(f'Max-F1 threshold: {threshold:.4f}; flags {flagged.mean():.1%} of customers; '
-      f'precision {threshold_summary.iloc[0]["precision"]:.3f}; '
-      f'recall {threshold_summary.iloc[0]["recall"]:.3f}; '
+print(f'Max-F1 threshold: {threshold:.4f}; flags {flagged_share:.1%} of customers; '
+      f'precision {selected_precision:.3f}; recall {selected_recall:.3f}; '
       f'F1 {best_f1:.3f}; missed churners {false_negatives:,}.')
-print(f'Top-20% contact budget: {int(top_flagged.sum()):,} customers; recall {top_recall:.3f}.')
+print(f'Top-20% contact budget: {flagged_customer_count:,} customers; recall {top_recall:.3f}.')
 
 # %% [markdown]
-# The choice of threshold can change which groups contain the most misses. A high F1
-# does not guarantee that a campaign's contact rate is affordable. A real campaign needs
-# a contact budget or a cost-based objective as well as a predictive model.
+# The youngest tenure band has a high miss rate despite containing a relatively small
+# share of all churners. The fixed-budget policy reduces recall and changes the
+# distribution of missed churners across the tenure bands. Threshold choice therefore
+# affects both campaign size and the pattern of observed errors.
 #
-# Limitations: model choice and threshold choice both used these development outcomes.
-# The reported F1 and error counts may be optimistic; we have not measured the size of
-# that effect. Scores are pooled from five models, and a later model fitted on all
-# training data may behave differently. Segment boundaries also affect the picture.
-# This analysis shows where churners are missed, not why they churn. Before final test
-# evaluation, fix the model, input groups and threshold. The test partition is unused here.
+# Model and threshold selection use the same development outcomes as the error tables.
+# Reported F1 and miss counts may consequently be optimistic, and the size of this
+# effect has not been measured. The pooled scores also come from five fitted models;
+# a model refitted on all training observations may produce different scores.
+#
+# The segment boundaries are analytical choices, and the results describe where errors
+# occur rather than why customers churn. Final evaluation requires fixed input groups,
+# preprocessing, model settings and threshold before the test outcomes are examined.
