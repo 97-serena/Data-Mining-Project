@@ -25,13 +25,34 @@ The notebooks are stored as `.py` files. Open them as Jupytext notebooks in Jupy
 | `src/data.py` | Data loading, including `load_train()` for the training partition. |
 | `src/preprocessing.py`, `src/features.py` | Preprocessing and feature groups. |
 | `src/evaluation.py`, `src/baselines.py` | Five-fold evaluation and the tenure baseline. |
+| `src/models.py` | Separate early-stopping data before fitting preprocessing. |
+| `src/group_comparison.py`, `src/thresholds.py` | Group contributions, threshold selection and contact budgets. |
 | `notebooks/data_exploration.py` | Exploratory analysis. |
 | `notebooks/preprocessing.py` | Preprocessing notes and transformation checks. |
 | `notebooks/modelling.py` | Evaluation, baselines, modelling and analysis. |
+| `reports/modelling_results.md` | Recorded results from the updated modelling notebook. |
 
 ## Evaluation
 
 Models are evaluated using stratified five-fold cross-validation with shuffling and seed 42. Average Precision (AP) is the primary metric. Preprocessing is fitted within each fold to avoid data leakage. The information baseline and the order in which feature groups are added are defined in `notebooks/modelling.py`.
+
+The modelling notebook includes Logistic Regression, Gaussian Naive Bayes, a Decision Tree,
+Random Forest and Gradient Boosting. Gradient Boosting separates its internal stopping sample
+before fitting preprocessing, so stopping labels cannot influence target encoding or imputation.
+
+For the information comparison, account, demographic and handset information stays fixed.
+All eight combinations of usage, usage change and service quality are evaluated on the same
+folds with both Gradient Boosting and Logistic Regression. The notebook reports what each
+group adds alone, what is lost when it is removed, and its average gain across all six
+addition orders (a Shapley allocation). The original single-order comparison is also shown.
+Calculated features enter only when their parent groups are present. This ranks the three
+extra groups for the chosen background, models and AP metric; it does not rank all six groups.
+
+The segment analysis chooses a model and an F1 threshold using development results.
+Its error counts may therefore be optimistic. The separate top-20% check selects a whole
+number of customers rounded down, with CustomerID breaking score ties. Fix the model,
+input groups and threshold before evaluating the final test set. Fold standard deviations
+describe variation; they are not confidence intervals.
 
 The example below evaluates a dummy classifier on the training data:
 
@@ -50,7 +71,11 @@ scores, predictions = evaluate_classifier(
 print(summarize_scores(scores))
 ```
 
-For other estimators, `make_model_pipeline(estimator, groups, **options)` in `src.evaluation` creates a pipeline that can be passed to `evaluate_classifier`. The test set is reserved for final evaluation.
+For ordinary estimators, `make_model_pipeline(estimator, groups, **options)` in
+`src.evaluation` creates a pipeline that can be passed to `evaluate_classifier`.
+For HistGradientBoosting with early stopping, use `make_early_stopping_pipeline` in
+`src.models`, as shown in the modelling notebook. It separates the stopping rows before
+fitting preprocessing. The test set is reserved for final evaluation.
 
 ## Dependencies
 
