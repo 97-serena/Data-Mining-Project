@@ -1,1 +1,1 @@
-"""Reusable data preparation, exploration, and reference baselines for Cell2Cell."""
+"""Reusable data preparation and reference baselines for Cell2Cell."""
