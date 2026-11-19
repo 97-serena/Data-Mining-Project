@@ -1,1 +1,1 @@
-"""Reusable data, preprocessing, exploration, and evaluation code for Cell2Cell."""
+"""Reusable data preparation, exploration, and reference baselines for Cell2Cell."""

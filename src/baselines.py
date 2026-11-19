@@ -6,20 +6,7 @@ import numpy as np
 import pandas as pd
 from numpy.typing import NDArray
 from sklearn.base import BaseEstimator, ClassifierMixin
-from sklearn.dummy import DummyClassifier
 from sklearn.utils.validation import check_is_fitted
-
-from src.data import RANDOM_STATE
-
-
-def constant_churn_baseline() -> DummyClassifier:
-    """Score every customer with the churn rate in the training labels."""
-    return DummyClassifier(strategy="prior")
-
-
-def stratified_random_baseline() -> DummyClassifier:
-    """Draw random labels in proportion to the training labels."""
-    return DummyClassifier(strategy="stratified", random_state=RANDOM_STATE)
 
 
 class TenureRule(ClassifierMixin, BaseEstimator):

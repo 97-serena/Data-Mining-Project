@@ -1,4 +1,4 @@
-"""Prepare raw prediction inputs and build individual feature transformations."""
+"""Prepare prediction inputs and define shared feature processing for Cell2Cell."""
 
 from typing import Self
 
@@ -9,7 +9,7 @@ from sklearn.base import BaseEstimator, OneToOneFeatureMixin, TransformerMixin
 from sklearn.compose import ColumnTransformer
 from sklearn.impute import SimpleImputer
 from sklearn.model_selection import StratifiedKFold
-from sklearn.preprocessing import OneHotEncoder, StandardScaler, TargetEncoder
+from sklearn.preprocessing import OneHotEncoder, TargetEncoder
 from sklearn.utils.validation import check_is_fitted, validate_data
 
 from src.data import RANDOM_STATE
@@ -68,7 +68,7 @@ def prepare_predictors(customers: pd.DataFrame) -> pd.DataFrame:
     return cleaned
 
 
-class _SkewedLog(OneToOneFeatureMixin, TransformerMixin, BaseEstimator):
+class LogSkewedNumeric(OneToOneFeatureMixin, TransformerMixin, BaseEstimator):
     """Compress right-skewed nonnegative measurements, chosen on training data."""
 
     def fit(self, X: pd.DataFrame, y: pd.Series | None = None) -> Self:
@@ -93,7 +93,7 @@ class _SkewedLog(OneToOneFeatureMixin, TransformerMixin, BaseEstimator):
         return result
 
 
-class _ServiceAreaFrequency(OneToOneFeatureMixin, TransformerMixin, BaseEstimator):
+class ServiceAreaFrequencyEncoder(OneToOneFeatureMixin, TransformerMixin, BaseEstimator):
     """Represent each service area by its share of training rows."""
 
     def fit(self, X: pd.DataFrame, y: pd.Series | None = None) -> Self:
@@ -113,32 +113,12 @@ def numeric_median_imputer() -> SimpleImputer:
     return SimpleImputer(strategy="median", add_indicator=True, keep_empty_features=True)
 
 
-def numeric_scaler() -> StandardScaler:
-    """Standardize filled numeric values and their missing indicators."""
-    return StandardScaler()
-
-
-def log_skewed_numeric() -> _SkewedLog:
-    """Compress right-skewed nonnegative measurements before imputation."""
-    return _SkewedLog()
-
-
 def target_encode_service_area() -> TargetEncoder:
     """Estimate smoothed churn rates by area using five internal training splits."""
     return TargetEncoder(
         target_type="binary",
         cv=StratifiedKFold(n_splits=5, shuffle=True, random_state=RANDOM_STATE),
     )
-
-
-def frequency_encode_service_area() -> _ServiceAreaFrequency:
-    """Encode each area by its share of training rows."""
-    return _ServiceAreaFrequency()
-
-
-def one_hot_encode_service_area() -> OneHotEncoder:
-    """Add an indicator column for each service area seen in training."""
-    return OneHotEncoder(handle_unknown="ignore")
 
 
 def combine_feature_steps(
@@ -149,27 +129,9 @@ def combine_feature_steps(
     """Attach explicit numeric and ServiceArea steps to the prepared inputs.
 
     Use mode imputation for yes/no columns and one-hot encoding for other
-    categories. One-hot outputs can use sparse storage. Fit the combined
-    steps with the model inside each validation fold.
+    categories. The caller can set the column transformer's sparse_threshold
+    to 0.0 for models that use dense input.
     """
-    return _combine_feature_steps(numeric, service_area, sparse_threshold=1.0)
-
-
-def combine_dense_feature_steps(
-    *,
-    numeric: BaseEstimator,
-    service_area: BaseEstimator,
-) -> ColumnTransformer:
-    """Attach the same feature steps and produce a dense matrix."""
-    return _combine_feature_steps(numeric, service_area, sparse_threshold=0.0)
-
-
-def _combine_feature_steps(
-    numeric: BaseEstimator,
-    service_area: BaseEstimator,
-    *,
-    sparse_threshold: float,
-) -> ColumnTransformer:
     binary_imputer = SimpleImputer(
         strategy="most_frequent", add_indicator=True, keep_empty_features=True,
     )
@@ -180,6 +142,6 @@ def _combine_feature_steps(
             ("service_area", service_area, [SERVICE_AREA]),
             ("category", OneHotEncoder(handle_unknown="ignore"), list(CATEGORICAL_COLUMNS)),
         ],
-        sparse_threshold=sparse_threshold,
+        sparse_threshold=1.0,
         verbose_feature_names_out=False,
     )

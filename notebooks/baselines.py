@@ -32,34 +32,59 @@
 from pathlib import Path
 import sys
 
+import pandas as pd
 from IPython.display import display
+from sklearn.dummy import DummyClassifier
+from sklearn.model_selection import RepeatedStratifiedKFold, cross_validate
 
 project_root = Path.cwd()
 if not (project_root / "src" / "data.py").is_file():
     project_root = project_root.parent
 sys.path.insert(0, str(project_root))
 
-from src.baselines import TenureRule, constant_churn_baseline, stratified_random_baseline
-from src.data import load_train
-from src.evaluation import compare_models
+from src.baselines import TenureRule
+from src.data import RANDOM_STATE, load_train
 from src.preprocessing import prepare_predictors
 
 train = load_train()
 X = prepare_predictors(train)[["MonthsInService"]]
 y = train["churn"]
 
-baselines = {
-    "Constant churn rate": constant_churn_baseline(),
-    "Stratified random": stratified_random_baseline(),
-    "Fixed tenure (11–12 months)": TenureRule(),
-}
+splitter = RepeatedStratifiedKFold(
+    n_splits=5,
+    n_repeats=2,
+    random_state=RANDOM_STATE,
+)
+
+baselines = [
+    ("Constant churn rate", DummyClassifier(strategy="prior")),
+    ("Stratified random", DummyClassifier(strategy="stratified", random_state=RANDOM_STATE)),
+    ("Fixed tenure (11–12 months)", TenureRule()),
+]
 
 # %% [markdown]
 # We use the same ten validation splits as the trained models. We report the
-# mean and sample standard deviation for average precision, which summarizes
-# how well we identify churners, and ROC AUC, which measures how well we rank
-# churners above customers who stay.
+# mean and sample standard deviation for average precision (AP) and ROC AUC.
 
 # %%
-results = compare_models(baselines, X, y).rename_axis("Baseline")
+rows = []
+
+for baseline_name, model in baselines:
+    scores = cross_validate(
+        model,
+        X,
+        y,
+        cv=splitter,
+        scoring=["average_precision", "roc_auc"],
+        error_score="raise",
+    )
+
+    ap = scores["test_average_precision"]
+    auc = scores["test_roc_auc"]
+    rows.append([baseline_name, ap.mean(), ap.std(ddof=1), auc.mean(), auc.std(ddof=1)])
+
+results = pd.DataFrame(
+    rows,
+    columns=["Baseline", "AP mean", "AP SD", "ROC AUC mean", "ROC AUC SD"],
+)
 display(results.round(4))
