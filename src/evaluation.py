@@ -1,4 +1,4 @@
-"""Compare preprocessing choices on shared training-partition validation folds."""
+"""Compare models and preprocessing on shared training-partition validation folds."""
 
 from collections.abc import Mapping
 
@@ -59,12 +59,30 @@ def compare_preprocessing(
     """
     if not preprocessors:
         raise ValueError("Provide at least one preprocessing option")
+
+    pipelines = {
+        name: make_model_pipeline(estimator, preprocessor)
+        for name, preprocessor in preprocessors.items()
+    }
+    return compare_models(pipelines, X, y, n_jobs=n_jobs).rename_axis("Preprocessing")
+
+
+def compare_models(
+    models: Mapping[str, BaseEstimator],
+    X: pd.DataFrame,
+    y: pd.Series,
+    *,
+    n_jobs: int = 1,
+) -> pd.DataFrame:
+    """Score named classifiers on shared folds and summarize AP and ROC AUC."""
+    if not models:
+        raise ValueError("Provide at least one model")
+
     folds = make_shared_folds(X, y)
     summaries = {}
-    for name, preprocessor in preprocessors.items():
-        pipeline = make_model_pipeline(estimator, preprocessor)
+    for name, model in models.items():
         scores = cross_validate(
-            pipeline,
+            model,
             X,
             y,
             scoring=SCORING,
@@ -78,7 +96,7 @@ def compare_preprocessing(
             summary[f"{metric} (mean)"] = np.mean(values)
             summary[f"{metric} (SD)"] = np.std(values, ddof=1)
         summaries[name] = summary
-    return pd.DataFrame.from_dict(summaries, orient="index").rename_axis("Preprocessing")
+    return pd.DataFrame.from_dict(summaries, orient="index").rename_axis("Model")
 
 
 def tree_feature_importance(fitted_pipeline: Pipeline) -> pd.Series:

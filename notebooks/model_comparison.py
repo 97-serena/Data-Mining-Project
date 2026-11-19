@@ -34,8 +34,7 @@
 # same reserved test customers in a single evaluation. We will
 # report average precision, our main metric for finding churners while limiting
 # false alarms, and ROC AUC, the chance that a churner ranks above a customer who
-# stays. We will also score a reference model that assigns everyone the training
-# churn rate.
+# stays. We will also score our [reference baselines](baselines.py).
 
 # %% [markdown]
 # ## Prioritize outreach

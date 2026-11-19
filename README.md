@@ -20,6 +20,7 @@ We use Jupytext’s `py:percent` format to store notebooks as plain Python files
 ## Notebook guide
 
 - [Data exploration](notebooks/data_exploration.py) describes the data and the inputs available to our models.
+- [Reference baselines](notebooks/baselines.py) compares constant churn-rate scores, stratified random guesses, and a fixed tenure rule on our shared validation splits.
 - [Logistic regression](notebooks/logistic_regression.py), [Gaussian naive Bayes](notebooks/gaussian_naive_bayes.py), [decision tree](notebooks/decision_tree.py), [random forest](notebooks/random_forest.py), and [histogram gradient boosting](notebooks/histogram_gradient_boosting.py) each compare preprocessing options at fixed starting model settings. We leave tuning for the team to complete in each notebook.
 - [Model comparison](notebooks/model_comparison.py) outlines how we’ll evaluate the chosen pipelines together once we’ve agreed on their settings.
 
