@@ -39,6 +39,7 @@ from src.preprocessing import (
     ServiceAreaFrequencyEncoder,
     combine_feature_steps,
     numeric_median_imputer,
+    numeric_zero_imputer,
     prepare_predictors,
     target_encode_service_area,
 )
@@ -57,7 +58,8 @@ splitter = RepeatedStratifiedKFold(
 # ## Preprocessing options
 #
 # We compare target encoding (estimated churn rate by service area) with frequency
-# encoding (how common each area is). We keep median imputation fixed.
+# encoding (how common each area is). We compare filling missing numeric values
+# with the training median or with zero.
 
 # %%
 model = RandomForestClassifier()
@@ -65,6 +67,11 @@ model = RandomForestClassifier()
 encoding_options = [
     ("Target", target_encode_service_area()),
     ("Frequency", ServiceAreaFrequencyEncoder()),
+]
+
+imputation_options = [
+    ("Median", numeric_median_imputer()),
+    ("Zero", numeric_zero_imputer()),
 ]
 
 # %% [markdown]
@@ -79,42 +86,44 @@ encoding_options = [
 rows = []
 
 for encoding_name, encoder in encoding_options:
-    # Keep the transformed features in a dense matrix.
-    preprocessing = combine_feature_steps(
-        numeric=numeric_median_imputer(),
-        service_area=encoder,
-    )
-    pipeline = make_pipeline(preprocessing, model)
+    for imputation_name, imputer in imputation_options:
+        preprocessing = combine_feature_steps(
+            numeric=imputer,
+            service_area=encoder,
+        )
+        pipeline = make_pipeline(preprocessing, model)
 
-    scores = cross_validate(
-        pipeline,
-        X,
-        y,
-        cv=splitter,
-        scoring=["average_precision", "roc_auc"],
-        error_score="raise",
-    )
+        scores = cross_validate(
+            pipeline,
+            X,
+            y,
+            cv=splitter,
+            scoring=["average_precision", "roc_auc"],
+            error_score="raise",
+        )
 
-    ap = scores["test_average_precision"]
-    auc = scores["test_roc_auc"]
-    rows.append(
-        [
-            encoding_name,
-            ap.mean(),
-            ap.std(ddof=1),
-            auc.mean(),
-            auc.std(ddof=1),
-        ]
-    )
+        ap = scores["test_average_precision"]
+        auc = scores["test_roc_auc"]
+        rows.append(
+            [
+                encoding_name,
+                imputation_name,
+                ap.mean(),
+                ap.std(ddof=1),
+                auc.mean(),
+                auc.std(ddof=1),
+            ]
+        )
+
 
 results = pd.DataFrame(
     rows,
-    columns=["Encoding", "AP mean", "AP SD", "ROC AUC mean", "ROC AUC SD"],
+    columns=["Encoding", "Imputation", "AP mean", "AP SD", "ROC AUC mean", "ROC AUC SD"],
 )
 print(results.round(4))
 
-# %%
-Frequency (needs checking) add zero vs median
+# %% [markdown]
+# Frequency (needs checking).
 
 # %% [markdown]
 # ## Hyperparameter tuning

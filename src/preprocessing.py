@@ -113,6 +113,13 @@ def numeric_median_imputer() -> SimpleImputer:
     return SimpleImputer(strategy="median", add_indicator=True, keep_empty_features=True)
 
 
+def numeric_zero_imputer() -> SimpleImputer:
+    """Fill numeric blanks with zero and record missingness."""
+    return SimpleImputer(
+        strategy="constant", fill_value=0, add_indicator=True, keep_empty_features=True,
+    )
+
+
 def target_encode_service_area() -> TargetEncoder:
     """Estimate smoothed churn rates by area using five internal training splits."""
     return TargetEncoder(

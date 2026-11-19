@@ -40,6 +40,7 @@ from src.preprocessing import (
     ServiceAreaFrequencyEncoder,
     combine_feature_steps,
     numeric_median_imputer,
+    numeric_zero_imputer,
     prepare_predictors,
     target_encode_service_area,
 )
@@ -58,8 +59,9 @@ splitter = RepeatedStratifiedKFold(
 # ## Preprocessing options
 #
 # We compare target encoding (estimated churn rate by service area) with frequency
-# encoding (how common each area is). For each encoder, we try a log transform to
-# compress large values before we impute missing numbers with medians.
+# encoding (how common each area is). For each encoder, we try a log transform
+# to compress large values. We then fill missing numbers with training-fold
+# medians or zero.
 
 # %%
 model = GaussianNB()
@@ -72,6 +74,11 @@ encoding_options = [
 log_options = [
     ("No log", []),
     ("Log", [LogSkewedNumeric()]),
+]
+
+imputation_options = [
+    ("Median", numeric_median_imputer()),
+    ("Zero", numeric_zero_imputer()),
 ]
 
 # %% [markdown]
@@ -87,44 +94,46 @@ rows = []
 
 for encoding_name, encoder in encoding_options:
     for log_name, optional_log_steps in log_options:
-        numeric_steps = optional_log_steps + [numeric_median_imputer()]
-        # Keep the transformed features in a dense matrix.
-        preprocessing = combine_feature_steps(
-            numeric=make_pipeline(*numeric_steps),
-            service_area=encoder,
-        ).set_params(sparse_threshold=0.0)
-        pipeline = make_pipeline(preprocessing, model)
+        for imputation_name, imputer in imputation_options:
+            numeric_steps = optional_log_steps + [imputer]
+            # Keep the transformed features in a dense matrix.
+            preprocessing = combine_feature_steps(
+                numeric=make_pipeline(*numeric_steps),
+                service_area=encoder,
+            ).set_params(sparse_threshold=0.0)
+            pipeline = make_pipeline(preprocessing, model)
 
-        scores = cross_validate(
-            pipeline,
-            X,
-            y,
-            cv=splitter,
-            scoring=["average_precision", "roc_auc"],
-            error_score="raise",
-        )
+            scores = cross_validate(
+                pipeline,
+                X,
+                y,
+                cv=splitter,
+                scoring=["average_precision", "roc_auc"],
+                error_score="raise",
+            )
 
-        ap = scores["test_average_precision"]
-        auc = scores["test_roc_auc"]
-        rows.append(
-            [
-                encoding_name,
-                log_name,
-                ap.mean(),
-                ap.std(ddof=1),
-                auc.mean(),
-                auc.std(ddof=1),
-            ]
-        )
+            ap = scores["test_average_precision"]
+            auc = scores["test_roc_auc"]
+            rows.append(
+                [
+                    encoding_name,
+                    log_name,
+                    imputation_name,
+                    ap.mean(),
+                    ap.std(ddof=1),
+                    auc.mean(),
+                    auc.std(ddof=1),
+                ]
+            )
 
 results = pd.DataFrame(
     rows,
-    columns=["Encoding", "Log", "AP mean", "AP SD", "ROC AUC mean", "ROC AUC SD"],
+    columns=["Encoding", "Log", "Imputation", "AP mean", "AP SD", "ROC AUC mean", "ROC AUC SD"],
 )
 display(results.round(4))
 
-# %%
-Frequency + Log (needs checking) add zero vs median
+# %% [markdown]
+# We still need to check frequency encoding with the log transform.
 
 # %% [markdown]
 # ## Hyperparameter tuning
