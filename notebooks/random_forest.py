@@ -113,6 +113,9 @@ results = pd.DataFrame(
 )
 print(results.round(4))
 
+# %%
+Frequency (needs checking) add zero vs median
+
 # %% [markdown]
 # ## Hyperparameter tuning
 #
@@ -127,3 +130,5 @@ print(results.round(4))
 # Once we fit our chosen pipeline, we will read the tree model's built-in
 # `feature_importances_` and label the scores using the fitted preprocessing's
 # `get_feature_names_out()`. This measure can favor inputs with many split points.
+
+# %%

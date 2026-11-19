@@ -88,3 +88,5 @@ results = pd.DataFrame(
     columns=["Baseline", "AP mean", "AP SD", "ROC AUC mean", "ROC AUC SD"],
 )
 display(results.round(4))
+
+# %%

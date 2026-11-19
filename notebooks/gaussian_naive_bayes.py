@@ -123,6 +123,9 @@ results = pd.DataFrame(
 )
 display(results.round(4))
 
+# %%
+Frequency + Log (needs checking) add zero vs median
+
 # %% [markdown]
 # ## Hyperparameter tuning
 #

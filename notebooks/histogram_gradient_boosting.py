@@ -113,6 +113,9 @@ results = pd.DataFrame(
 )
 display(results.round(4))
 
+# %%
+Target encoding (needs checking) add zero vs median
+
 # %% [markdown]
 # ## Hyperparameter tuning
 #
