@@ -1,4 +1,8 @@
-"""Raw columns eligible for scoring a customer before retention outreach."""
+"""Input schema for scoring customers before retention outreach.
+
+Column types describe how values are encoded. For example, the numeric codes
+in IncomeGroup represent categories.
+"""
 
 NUMERIC_COLUMNS = (
     "MonthlyRevenue",

@@ -1,13 +1,17 @@
 """Build unfitted preprocessing for prediction-time inputs."""
 
+from typing import Literal, Self
+
 import numpy as np
-from sklearn.base import BaseEstimator, TransformerMixin
+import pandas as pd
+from numpy.typing import NDArray
+from sklearn.base import BaseEstimator, OneToOneFeatureMixin, TransformerMixin
 from sklearn.compose import ColumnTransformer
 from sklearn.impute import SimpleImputer
 from sklearn.model_selection import StratifiedKFold
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import FunctionTransformer, OneHotEncoder, StandardScaler, TargetEncoder
-from sklearn.utils.validation import check_is_fitted
+from sklearn.utils.validation import check_is_fitted, validate_data
 
 from src.data import RANDOM_STATE
 from src.features import (
@@ -20,13 +24,25 @@ from src.features import (
 
 AGE_COLUMNS = ("AgeHH1", "AgeHH2")
 # Billing values and usage changes can be signed, so keep their original units.
-SIGNED_COLUMNS = ("MonthlyRevenue", "TotalRecurringCharge", "PercChangeMinutes", "PercChangeRevenues")
+SIGNED_COLUMNS = (
+    "MonthlyRevenue",
+    "TotalRecurringCharge",
+    "PercChangeMinutes",
+    "PercChangeRevenues",
+)
 MISSING_CATEGORY = "__MISSING__"
 
 
-def _clean_inputs(X):
-    """Select approved inputs and normalize recorded missing values and yes/no labels."""
+def _clean_inputs(X: pd.DataFrame) -> pd.DataFrame:
+    """Select eligible inputs and normalize missing values and yes/no labels."""
+    if not isinstance(X, pd.DataFrame) or not X.columns.is_unique:
+        raise ValueError("Pass a DataFrame with unique column names")
+    missing = sorted(set(PREDICTOR_COLUMNS).difference(X.columns))
+    if missing:
+        raise ValueError(f"Missing prediction columns: {', '.join(missing)}")
+
     cleaned = X.loc[:, list(PREDICTOR_COLUMNS)].copy()
+    # Zero household ages are placeholders. Negative equipment ages are invalid.
     for column in AGE_COLUMNS:
         cleaned[column] = cleaned[column].where(cleaned[column] > 0)
     days = cleaned["CurrentEquipmentDays"]
@@ -35,6 +51,7 @@ def _clean_inputs(X):
     for column in (*CATEGORICAL_COLUMNS, SERVICE_AREA):
         values = cleaned[column].astype("string")
         if column == "IncomeGroup":
+            # CSV readers may represent integer codes as floats when values are missing.
             values = values.str.replace(r"^(\d+)\.0$", r"\1", regex=True)
         cleaned[column] = values.fillna(MISSING_CATEGORY).astype(object)
 
@@ -47,94 +64,106 @@ def _clean_inputs(X):
     return cleaned
 
 
-def _input_feature_names(transformer, input_features):
+def _input_feature_names(_transformer, _input_features) -> NDArray[np.object_]:
     """Use the approved input names and their order after cleaning."""
     return np.asarray(PREDICTOR_COLUMNS, dtype=object)
 
 
-class _SkewedLog(TransformerMixin, BaseEstimator):
+class _SkewedLog(OneToOneFeatureMixin, TransformerMixin, BaseEstimator):
     """Compress right-skewed nonnegative measurements, chosen on training data."""
 
-    def fit(self, X, y=None):
+    def fit(self, X: pd.DataFrame, y: pd.Series | None = None) -> Self:
+        validate_data(self, X, skip_check_array=True)
         skew = X.skew()
-        self.columns_ = [
-            column for column in X.columns
+        self.log_columns_ = [
+            column
+            for column in X.columns
             if column not in SIGNED_COLUMNS
             and (X[column].dropna() >= 0).all()
             and skew[column] > 1
         ]
         return self
 
-    def transform(self, X):
-        check_is_fitted(self, "columns_")
+    def transform(self, X: pd.DataFrame) -> pd.DataFrame:
+        check_is_fitted(self, "log_columns_")
+        validate_data(self, X, reset=False, skip_check_array=True)
         result = X.copy()
-        for column in self.columns_:
+        for column in self.log_columns_:
             values = result[column].where(result[column] >= 0).astype(float)
             result[column] = np.log1p(values)
         return result
 
-    def get_feature_names_out(self, input_features):
-        return np.asarray(input_features, dtype=object)
-
-
-class _ServiceAreaFrequency(TransformerMixin, BaseEstimator):
+class _ServiceAreaFrequency(OneToOneFeatureMixin, TransformerMixin, BaseEstimator):
     """Represent each service area by its share of training rows."""
 
-    def fit(self, X, y=None):
+    def fit(self, X: pd.DataFrame, y: pd.Series | None = None) -> Self:
+        validate_data(self, X, skip_check_array=True)
         self.frequencies_ = X[SERVICE_AREA].value_counts(normalize=True)
         return self
 
-    def transform(self, X):
+    def transform(self, X: pd.DataFrame) -> NDArray[np.float64]:
         check_is_fitted(self, "frequencies_")
+        validate_data(self, X, reset=False, skip_check_array=True)
         frequencies = X[SERVICE_AREA].map(self.frequencies_).fillna(0.0)
         return frequencies.to_numpy().reshape(-1, 1)
 
-    def get_feature_names_out(self, input_features):
-        return np.asarray(input_features, dtype=object)
 
+def make_preprocessor(
+    *,
+    encoding: Literal["target", "onehot", "frequency"] = "target",
+    scale_numeric: bool = False,
+    log_numeric: bool = False,
+    dense: bool = False,
+) -> Pipeline:
+    """Build an unfitted pipeline for raw Cell2Cell inputs.
 
-def make_preprocessor(*, encoding="target", scale_numeric=False, log_numeric=False, dense=False):
-    """Return a fresh scikit-learn pipeline for the Cell2Cell predictors.
+    `encoding` controls ServiceArea. Target encoding estimates smoothed
+    churn rates in five internal training splits. Frequency encoding uses
+    each area's share of training rows. One-hot encoding uses an indicator
+    per area. Other categorical fields always use one-hot encoding.
 
-    Choose how ServiceArea is encoded: "target" uses smoothed churn rates with
-    internal stratified cross-fitting, "onehot" uses an indicator per area,
-    and "frequency" uses the share of training rows in each area. Other
-    categories always use one-hot encoding.
+    Numeric blanks use training medians and yes/no blanks use the most
+    frequent training label. `log_numeric` compresses right-skewed
+    nonnegative measurements. `scale_numeric` standardizes numeric values
+    and their missing indicators. Set `dense=True` for models that require
+    dense input.
 
-    Numeric blanks use training medians and binary blanks use training modes.
-    Optional log compression applies to skewed, nonnegative measurements.
-    Optional scaling centers and scales numeric inputs and their missing
-    indicators. Set dense=True for estimators that require a dense matrix.
+    Fit this as part of a model pipeline inside each validation split.
+    Preprocessing expects a DataFrame with the columns in PREDICTOR_COLUMNS.
     """
-    onehot = OneHotEncoder(handle_unknown="ignore", sparse_output=not dense)
-    area_encoders = {
-        "target": TargetEncoder(
+    if encoding == "target":
+        area_encoder = TargetEncoder(
             target_type="binary",
             cv=StratifiedKFold(n_splits=5, shuffle=True, random_state=RANDOM_STATE),
-        ),
-        "onehot": onehot,
-        "frequency": _ServiceAreaFrequency(),
-    }
-    if encoding not in area_encoders:
+        )
+    elif encoding == "onehot":
+        area_encoder = OneHotEncoder(handle_unknown="ignore", sparse_output=not dense)
+    elif encoding == "frequency":
+        area_encoder = _ServiceAreaFrequency()
+    else:
         raise ValueError("encoding must be 'target', 'onehot', or 'frequency'")
 
+    numeric_imputer = SimpleImputer(strategy="median", add_indicator=True, keep_empty_features=True)
+    binary_imputer = SimpleImputer(
+        strategy="most_frequent", add_indicator=True, keep_empty_features=True,
+    )
     numeric_steps = []
     if log_numeric:
         numeric_steps.append(("log", _SkewedLog()))
-    numeric_steps.append(("impute", SimpleImputer(
-        strategy="median", add_indicator=True, keep_empty_features=True,
-    )))
+    numeric_steps.append(("impute", numeric_imputer))
     if scale_numeric:
         numeric_steps.append(("scale", StandardScaler()))
 
     columns = ColumnTransformer(
         [
             ("numeric", Pipeline(numeric_steps), list(NUMERIC_COLUMNS)),
-            ("binary", SimpleImputer(
-                strategy="most_frequent", add_indicator=True, keep_empty_features=True,
-            ), list(BINARY_COLUMNS)),
-            ("service_area", area_encoders[encoding], [SERVICE_AREA]),
-            ("category", onehot, list(CATEGORICAL_COLUMNS)),
+            ("binary", binary_imputer, list(BINARY_COLUMNS)),
+            ("service_area", area_encoder, [SERVICE_AREA]),
+            (
+                "category",
+                OneHotEncoder(handle_unknown="ignore", sparse_output=not dense),
+                list(CATEGORICAL_COLUMNS),
+            ),
         ],
         sparse_threshold=0.0 if dense else 1.0,
         verbose_feature_names_out=False,

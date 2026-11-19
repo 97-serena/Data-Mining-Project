@@ -224,3 +224,7 @@ __marimo__/
 
 # local exports of the shared text notebooks
 notebooks/*.ipynb
+
+# Local desktop metadata
+.DS_State
+.DS_Store

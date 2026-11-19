@@ -1,4 +1,5 @@
 """Read Cell2Cell records and the project's fixed train/test assignments."""
+
 from pathlib import Path
 
 import pandas as pd
@@ -11,19 +12,19 @@ RANDOM_STATE = 42
 TEST_SIZE = 0.2
 
 
-def load_raw():
+def load_raw() -> pd.DataFrame:
     """Load all labelled customers with the original and binary churn labels."""
     return _with_churn_label(pd.read_csv(DATA_PATH))
 
 
-def _with_churn_label(df):
-    df["churn"] = df["Churn"].map({"No": 0, "Yes": 1})
-    if df["churn"].isna().any():
+def _with_churn_label(customers: pd.DataFrame) -> pd.DataFrame:
+    churn = customers["Churn"].map({"No": 0, "Yes": 1})
+    if churn.isna().any():
         raise ValueError("Churn must contain only Yes and No labels")
-    return df
+    return customers.assign(churn=churn)
 
 
-def make_split():
+def make_split() -> None:
     """Overwrite the split file with reproducible, stratified customer assignments."""
     df = load_raw()
     train_ids, test_ids = train_test_split(
@@ -34,22 +35,32 @@ def make_split():
     )
     train_split = pd.DataFrame({"CustomerID": train_ids, "split": "train"})
     test_split = pd.DataFrame({"CustomerID": test_ids, "split": "test"})
-    split = pd.concat([train_split, test_split])
-    split = split.sort_values("CustomerID")
-    split.to_csv(SPLIT_PATH, index=False)
+    assignments = pd.concat([train_split, test_split]).sort_values("CustomerID")
+    assignments.to_csv(SPLIT_PATH, index=False)
 
 
-def load_train():
-    """Load only training customers in dataset order, with both churn labels."""
-    split = pd.read_csv(SPLIT_PATH)
-    training_ids = split.loc[split["split"] == "train", "CustomerID"]
+def load_train() -> pd.DataFrame:
+    """Return labelled training rows in dataset order.
+
+    The committed split must assign every customer to exactly one partition.
+    Holding the row order fixed keeps validation splits reproducible.
+    """
     raw = pd.read_csv(DATA_PATH)
-    train = raw.loc[raw["CustomerID"].isin(training_ids)].reset_index(drop=True)
+    assignments = pd.read_csv(SPLIT_PATH, usecols=["CustomerID", "split"])
+    if raw["CustomerID"].isna().any() or assignments["CustomerID"].isna().any():
+        raise ValueError("Customer IDs must be present in both the dataset and the split file")
+
+    customers = raw.merge(assignments, on="CustomerID", how="left", validate="one_to_one")
+    if len(assignments) != len(raw) or set(customers["split"]) != {"train", "test"}:
+        raise ValueError("The split file must assign every customer to train or test")
+
+    train = customers.loc[customers["split"] == "train", raw.columns].reset_index(drop=True)
     return _with_churn_label(train)
 
 
-def load_training_data():
-    """Return eligible predictors and binary churn labels from the fixed training partition."""
+def load_training_data() -> tuple[pd.DataFrame, pd.Series]:
+    """Return prediction-time inputs and their aligned churn labels (1 = churn)."""
+    # Keep split regeneration usable when data.py is run as a script.
     from src.features import PREDICTOR_COLUMNS
 
     train = load_train()
