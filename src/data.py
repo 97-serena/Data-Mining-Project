@@ -58,14 +58,5 @@ def load_train() -> pd.DataFrame:
     return _with_churn_label(train)
 
 
-def load_training_data() -> tuple[pd.DataFrame, pd.Series]:
-    """Return prediction-time inputs and their aligned churn labels (1 = churn)."""
-    # Keep split regeneration usable when data.py is run as a script.
-    from src.features import PREDICTOR_COLUMNS
-
-    train = load_train()
-    return train.loc[:, list(PREDICTOR_COLUMNS)], train["churn"]
-
-
 if __name__ == "__main__":
     make_split()

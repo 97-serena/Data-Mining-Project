@@ -33,17 +33,25 @@ if not (project_root / "src" / "data.py").is_file():
     project_root = project_root.parent
 sys.path.insert(0, str(project_root))
 
-from src.data import RANDOM_STATE, load_training_data
+from src.data import RANDOM_STATE, load_train
 from src.evaluation import compare_preprocessing
-from src.preprocessing import make_preprocessor
+from src.preprocessing import (
+    combine_dense_feature_steps,
+    frequency_encode_service_area,
+    numeric_median_imputer,
+    prepare_predictors,
+    target_encode_service_area,
+)
 
-X, y = load_training_data()
+train = load_train()
+X = prepare_predictors(train)
+y = train["churn"]
 
 # %% [markdown]
 # ## Preprocessing options
 #
-# Preprocessing prepares the inputs for the model. We keep model settings fixed so we
-# can compare how the options below affect performance.
+# We use the same eligible predictors and model settings for every option.
+# This lets us compare the effect of each set of preprocessing steps.
 # We compare two ways to encode `ServiceArea`. Target encoding estimates churn rates
 # by area. Frequency encoding measures how common each area is.
 
@@ -58,8 +66,14 @@ estimator = HistGradientBoostingClassifier(
 )
 
 preprocessors = {
-    "Target encoding": make_preprocessor(encoding="target", dense=True),
-    "Frequency encoding": make_preprocessor(encoding="frequency", dense=True),
+    "Target encoding": combine_dense_feature_steps(
+        numeric=numeric_median_imputer(),
+        service_area=target_encode_service_area(),
+    ),
+    "Frequency encoding": combine_dense_feature_steps(
+        numeric=numeric_median_imputer(),
+        service_area=frequency_encode_service_area(),
+    ),
 }
 
 # %% [markdown]

@@ -1,6 +1,6 @@
-"""Build unfitted preprocessing for prediction-time inputs."""
+"""Prepare raw prediction inputs and build individual feature transformations."""
 
-from typing import Literal, Self
+from typing import Self
 
 import numpy as np
 import pandas as pd
@@ -9,8 +9,7 @@ from sklearn.base import BaseEstimator, OneToOneFeatureMixin, TransformerMixin
 from sklearn.compose import ColumnTransformer
 from sklearn.impute import SimpleImputer
 from sklearn.model_selection import StratifiedKFold
-from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import FunctionTransformer, OneHotEncoder, StandardScaler, TargetEncoder
+from sklearn.preprocessing import OneHotEncoder, StandardScaler, TargetEncoder
 from sklearn.utils.validation import check_is_fitted, validate_data
 
 from src.data import RANDOM_STATE
@@ -33,15 +32,20 @@ SIGNED_COLUMNS = (
 MISSING_CATEGORY = "__MISSING__"
 
 
-def _clean_inputs(X: pd.DataFrame) -> pd.DataFrame:
-    """Select eligible inputs and normalize missing values and yes/no labels."""
-    if not isinstance(X, pd.DataFrame) or not X.columns.is_unique:
+def prepare_predictors(customers: pd.DataFrame) -> pd.DataFrame:
+    """Select and clean the raw columns available before retention outreach.
+
+    This keeps the original row index and excludes churn labels, identifiers,
+    and fields with uncertain timing. It applies fixed rules to placeholders
+    and yes/no values. Call it on raw records before model fitting or scoring.
+    """
+    if not isinstance(customers, pd.DataFrame) or not customers.columns.is_unique:
         raise ValueError("Pass a DataFrame with unique column names")
-    missing = sorted(set(PREDICTOR_COLUMNS).difference(X.columns))
+    missing = sorted(set(PREDICTOR_COLUMNS).difference(customers.columns))
     if missing:
         raise ValueError(f"Missing prediction columns: {', '.join(missing)}")
 
-    cleaned = X.loc[:, list(PREDICTOR_COLUMNS)].copy()
+    cleaned = customers.loc[:, list(PREDICTOR_COLUMNS)].copy()
     # Zero household ages are placeholders. Negative equipment ages are invalid.
     for column in AGE_COLUMNS:
         cleaned[column] = cleaned[column].where(cleaned[column] > 0)
@@ -62,11 +66,6 @@ def _clean_inputs(X: pd.DataFrame) -> pd.DataFrame:
             raise ValueError(f"Expected Yes/No values in {column}")
         cleaned[column] = encoded
     return cleaned
-
-
-def _input_feature_names(_transformer, _input_features) -> NDArray[np.object_]:
-    """Use the approved input names and their order after cleaning."""
-    return np.asarray(PREDICTOR_COLUMNS, dtype=object)
 
 
 class _SkewedLog(OneToOneFeatureMixin, TransformerMixin, BaseEstimator):
@@ -93,6 +92,7 @@ class _SkewedLog(OneToOneFeatureMixin, TransformerMixin, BaseEstimator):
             result[column] = np.log1p(values)
         return result
 
+
 class _ServiceAreaFrequency(OneToOneFeatureMixin, TransformerMixin, BaseEstimator):
     """Represent each service area by its share of training rows."""
 
@@ -108,67 +108,78 @@ class _ServiceAreaFrequency(OneToOneFeatureMixin, TransformerMixin, BaseEstimato
         return frequencies.to_numpy().reshape(-1, 1)
 
 
-def make_preprocessor(
+def numeric_median_imputer() -> SimpleImputer:
+    """Fill numeric blanks with training medians and record missingness."""
+    return SimpleImputer(strategy="median", add_indicator=True, keep_empty_features=True)
+
+
+def numeric_scaler() -> StandardScaler:
+    """Standardize filled numeric values and their missing indicators."""
+    return StandardScaler()
+
+
+def log_skewed_numeric() -> _SkewedLog:
+    """Compress right-skewed nonnegative measurements before imputation."""
+    return _SkewedLog()
+
+
+def target_encode_service_area() -> TargetEncoder:
+    """Estimate smoothed churn rates by area using five internal training splits."""
+    return TargetEncoder(
+        target_type="binary",
+        cv=StratifiedKFold(n_splits=5, shuffle=True, random_state=RANDOM_STATE),
+    )
+
+
+def frequency_encode_service_area() -> _ServiceAreaFrequency:
+    """Encode each area by its share of training rows."""
+    return _ServiceAreaFrequency()
+
+
+def one_hot_encode_service_area() -> OneHotEncoder:
+    """Add an indicator column for each service area seen in training."""
+    return OneHotEncoder(handle_unknown="ignore")
+
+
+def combine_feature_steps(
     *,
-    encoding: Literal["target", "onehot", "frequency"] = "target",
-    scale_numeric: bool = False,
-    log_numeric: bool = False,
-    dense: bool = False,
-) -> Pipeline:
-    """Build an unfitted pipeline for raw Cell2Cell inputs.
+    numeric: BaseEstimator,
+    service_area: BaseEstimator,
+) -> ColumnTransformer:
+    """Attach explicit numeric and ServiceArea steps to the prepared inputs.
 
-    `encoding` controls ServiceArea. Target encoding estimates smoothed
-    churn rates in five internal training splits. Frequency encoding uses
-    each area's share of training rows. One-hot encoding uses an indicator
-    per area. Other categorical fields always use one-hot encoding.
-
-    Numeric blanks use training medians and yes/no blanks use the most
-    frequent training label. `log_numeric` compresses right-skewed
-    nonnegative measurements. `scale_numeric` standardizes numeric values
-    and their missing indicators. Set `dense=True` for models that require
-    dense input.
-
-    Fit this as part of a model pipeline inside each validation split.
-    Preprocessing expects a DataFrame with the columns in PREDICTOR_COLUMNS.
+    Use mode imputation for yes/no columns and one-hot encoding for other
+    categories. One-hot outputs can use sparse storage. Fit the combined
+    steps with the model inside each validation fold.
     """
-    if encoding == "target":
-        area_encoder = TargetEncoder(
-            target_type="binary",
-            cv=StratifiedKFold(n_splits=5, shuffle=True, random_state=RANDOM_STATE),
-        )
-    elif encoding == "onehot":
-        area_encoder = OneHotEncoder(handle_unknown="ignore", sparse_output=not dense)
-    elif encoding == "frequency":
-        area_encoder = _ServiceAreaFrequency()
-    else:
-        raise ValueError("encoding must be 'target', 'onehot', or 'frequency'")
+    return _combine_feature_steps(numeric, service_area, sparse_threshold=1.0)
 
-    numeric_imputer = SimpleImputer(strategy="median", add_indicator=True, keep_empty_features=True)
+
+def combine_dense_feature_steps(
+    *,
+    numeric: BaseEstimator,
+    service_area: BaseEstimator,
+) -> ColumnTransformer:
+    """Attach the same feature steps and produce a dense matrix."""
+    return _combine_feature_steps(numeric, service_area, sparse_threshold=0.0)
+
+
+def _combine_feature_steps(
+    numeric: BaseEstimator,
+    service_area: BaseEstimator,
+    *,
+    sparse_threshold: float,
+) -> ColumnTransformer:
     binary_imputer = SimpleImputer(
         strategy="most_frequent", add_indicator=True, keep_empty_features=True,
     )
-    numeric_steps = []
-    if log_numeric:
-        numeric_steps.append(("log", _SkewedLog()))
-    numeric_steps.append(("impute", numeric_imputer))
-    if scale_numeric:
-        numeric_steps.append(("scale", StandardScaler()))
-
-    columns = ColumnTransformer(
+    return ColumnTransformer(
         [
-            ("numeric", Pipeline(numeric_steps), list(NUMERIC_COLUMNS)),
+            ("numeric", numeric, list(NUMERIC_COLUMNS)),
             ("binary", binary_imputer, list(BINARY_COLUMNS)),
-            ("service_area", area_encoder, [SERVICE_AREA]),
-            (
-                "category",
-                OneHotEncoder(handle_unknown="ignore", sparse_output=not dense),
-                list(CATEGORICAL_COLUMNS),
-            ),
+            ("service_area", service_area, [SERVICE_AREA]),
+            ("category", OneHotEncoder(handle_unknown="ignore"), list(CATEGORICAL_COLUMNS)),
         ],
-        sparse_threshold=0.0 if dense else 1.0,
+        sparse_threshold=sparse_threshold,
         verbose_feature_names_out=False,
     )
-    return Pipeline([
-        ("clean", FunctionTransformer(_clean_inputs, feature_names_out=_input_feature_names)),
-        ("encode", columns),
-    ])

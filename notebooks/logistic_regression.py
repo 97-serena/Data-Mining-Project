@@ -26,23 +26,34 @@ import sys
 
 from IPython.display import display
 from sklearn.linear_model import LogisticRegression
+from sklearn.pipeline import make_pipeline
 
 project_root = Path.cwd()
 if not (project_root / "src" / "data.py").is_file():
     project_root = project_root.parent
 sys.path.insert(0, str(project_root))
 
-from src.data import load_training_data
+from src.data import load_train
 from src.evaluation import compare_preprocessing
-from src.preprocessing import make_preprocessor
+from src.preprocessing import (
+    combine_feature_steps,
+    log_skewed_numeric,
+    numeric_median_imputer,
+    numeric_scaler,
+    one_hot_encode_service_area,
+    prepare_predictors,
+    target_encode_service_area,
+)
 
-X, y = load_training_data()
+train = load_train()
+X = prepare_predictors(train)
+y = train["churn"]
 
 # %% [markdown]
 # ## Preprocessing options
 #
-# Preprocessing prepares the inputs for the model. We keep model settings fixed so we
-# can compare how the options below affect performance.
+# We use the same eligible predictors and model settings for every option.
+# This lets us compare the effect of each set of preprocessing steps.
 # We compare two ways to encode `ServiceArea`. Target encoding estimates churn rates by area,
 # while one-hot encoding represents areas with 0/1 columns. We scale numeric inputs
 # so different units do not dominate fitting, and try a log transform to compress large values.
@@ -51,10 +62,19 @@ X, y = load_training_data()
 estimator = LogisticRegression(C=1, max_iter=2000)
 
 preprocessors = {
-    "Target encoding + scaling": make_preprocessor(encoding="target", scale_numeric=True),
-    "One-hot encoding + scaling": make_preprocessor(encoding="onehot", scale_numeric=True),
-    "Target encoding + scaling + log transform": make_preprocessor(
-        encoding="target", scale_numeric=True, log_numeric=True,
+    "Target encoding + scaling": combine_feature_steps(
+        numeric=make_pipeline(numeric_median_imputer(), numeric_scaler()),
+        service_area=target_encode_service_area(),
+    ),
+    "One-hot encoding + scaling": combine_feature_steps(
+        numeric=make_pipeline(numeric_median_imputer(), numeric_scaler()),
+        service_area=one_hot_encode_service_area(),
+    ),
+    "Target encoding + scaling + log transform": combine_feature_steps(
+        numeric=make_pipeline(
+            log_skewed_numeric(), numeric_median_imputer(), numeric_scaler(),
+        ),
+        service_area=target_encode_service_area(),
     ),
 }
 

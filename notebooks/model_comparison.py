@@ -29,8 +29,9 @@
 # %% [markdown]
 # ## Compare on the reserved test data
 #
-# We will fit each chosen pipeline on the full training partition, then score
-# them all on the same reserved test customers in a single evaluation. We will
+# We will run `prepare_predictors()` on both partitions. We will fit each
+# chosen pipeline on the full training partition, then score them all on the
+# same reserved test customers in a single evaluation. We will
 # report average precision, our main metric for finding churners while limiting
 # false alarms, and ROC AUC, the chance that a churner ranks above a customer who
 # stays. We will also score a reference model that assigns everyone the training

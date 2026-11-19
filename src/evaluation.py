@@ -52,8 +52,8 @@ def compare_preprocessing(
 ) -> pd.DataFrame:
     """Return one row per option, with mean and sample SD for AP and ROC AUC.
 
-    Pass named preprocessors and the aligned inputs and labels from
-    load_training_data(). Each option uses the same model settings and
+    Pass named preprocessors, the output of prepare_predictors(), and the
+    aligned churn labels. Each option uses the same model settings and
     validation folds. Its preprocessing and model are fitted together on
     each fold's training rows.
     """
