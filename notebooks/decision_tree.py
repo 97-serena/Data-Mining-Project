@@ -25,10 +25,10 @@ from pathlib import Path
 
 import pandas as pd
 from IPython.display import display
-from sklearn.tree import DecisionTreeClassifier
 from sklearn.model_selection import RepeatedStratifiedKFold, cross_validate
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import OneHotEncoder
+from sklearn.tree import DecisionTreeClassifier
 
 project_root = Path.cwd()
 if not (project_root / "src" / "data.py").is_file():
@@ -62,9 +62,7 @@ splitter = RepeatedStratifiedKFold(
 # encoding creates a 0/1 column per area. We keep median imputation fixed.
 
 # %%
-model = DecisionTreeClassifier(
-    max_depth=5, min_samples_leaf=50, random_state=RANDOM_STATE,
-)
+model = DecisionTreeClassifier()
 
 encoding_options = [
     ("Target", target_encode_service_area()),
@@ -101,13 +99,15 @@ for encoding_name, encoder in encoding_options:
 
     ap = scores["test_average_precision"]
     auc = scores["test_roc_auc"]
-    rows.append([
-        encoding_name,
-        ap.mean(),
-        ap.std(ddof=1),
-        auc.mean(),
-        auc.std(ddof=1),
-    ])
+    rows.append(
+        [
+            encoding_name,
+            ap.mean(),
+            ap.std(ddof=1),
+            auc.mean(),
+            auc.std(ddof=1),
+        ]
+    )
 
 results = pd.DataFrame(
     rows,

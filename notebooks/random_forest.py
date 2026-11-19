@@ -24,7 +24,7 @@ import sys
 from pathlib import Path
 
 import pandas as pd
-from IPython.display import display
+import sklearn as sk
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import RepeatedStratifiedKFold, cross_validate
 from sklearn.pipeline import make_pipeline
@@ -60,13 +60,7 @@ splitter = RepeatedStratifiedKFold(
 # encoding (how common each area is). We keep median imputation fixed.
 
 # %%
-model = RandomForestClassifier(
-    n_estimators=300,
-    min_samples_leaf=20,
-    max_features="sqrt",
-    random_state=RANDOM_STATE,
-    n_jobs=-1,
-)
+model = RandomForestClassifier()
 
 encoding_options = [
     ("Target", target_encode_service_area()),
@@ -89,7 +83,7 @@ for encoding_name, encoder in encoding_options:
     preprocessing = combine_feature_steps(
         numeric=numeric_median_imputer(),
         service_area=encoder,
-    ).set_params(sparse_threshold=0.0)
+    )
     pipeline = make_pipeline(preprocessing, model)
 
     scores = cross_validate(
@@ -103,19 +97,21 @@ for encoding_name, encoder in encoding_options:
 
     ap = scores["test_average_precision"]
     auc = scores["test_roc_auc"]
-    rows.append([
-        encoding_name,
-        ap.mean(),
-        ap.std(ddof=1),
-        auc.mean(),
-        auc.std(ddof=1),
-    ])
+    rows.append(
+        [
+            encoding_name,
+            ap.mean(),
+            ap.std(ddof=1),
+            auc.mean(),
+            auc.std(ddof=1),
+        ]
+    )
 
 results = pd.DataFrame(
     rows,
     columns=["Encoding", "AP mean", "AP SD", "ROC AUC mean", "ROC AUC SD"],
 )
-display(results.round(4))
+print(results.round(4))
 
 # %% [markdown]
 # ## Hyperparameter tuning

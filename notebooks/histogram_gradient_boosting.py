@@ -60,14 +60,7 @@ splitter = RepeatedStratifiedKFold(
 # encoding (how common each area is). We keep median imputation fixed.
 
 # %%
-model = HistGradientBoostingClassifier(
-    learning_rate=0.05,
-    max_iter=300,
-    max_leaf_nodes=15,
-    min_samples_leaf=50,
-    early_stopping=False,
-    random_state=RANDOM_STATE,
-)
+model = HistGradientBoostingClassifier()
 
 encoding_options = [
     ("Target", target_encode_service_area()),
@@ -104,13 +97,15 @@ for encoding_name, encoder in encoding_options:
 
     ap = scores["test_average_precision"]
     auc = scores["test_roc_auc"]
-    rows.append([
-        encoding_name,
-        ap.mean(),
-        ap.std(ddof=1),
-        auc.mean(),
-        auc.std(ddof=1),
-    ])
+    rows.append(
+        [
+            encoding_name,
+            ap.mean(),
+            ap.std(ddof=1),
+            auc.mean(),
+            auc.std(ddof=1),
+        ]
+    )
 
 results = pd.DataFrame(
     rows,

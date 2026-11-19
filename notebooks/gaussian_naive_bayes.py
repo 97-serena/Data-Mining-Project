@@ -25,8 +25,8 @@ from pathlib import Path
 
 import pandas as pd
 from IPython.display import display
-from sklearn.naive_bayes import GaussianNB
 from sklearn.model_selection import RepeatedStratifiedKFold, cross_validate
+from sklearn.naive_bayes import GaussianNB
 from sklearn.pipeline import make_pipeline
 
 project_root = Path.cwd()
@@ -106,14 +106,16 @@ for encoding_name, encoder in encoding_options:
 
         ap = scores["test_average_precision"]
         auc = scores["test_roc_auc"]
-        rows.append([
-            encoding_name,
-            log_name,
-            ap.mean(),
-            ap.std(ddof=1),
-            auc.mean(),
-            auc.std(ddof=1),
-        ])
+        rows.append(
+            [
+                encoding_name,
+                log_name,
+                ap.mean(),
+                ap.std(ddof=1),
+                auc.mean(),
+                auc.std(ddof=1),
+            ]
+        )
 
 results = pd.DataFrame(
     rows,

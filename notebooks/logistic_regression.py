@@ -62,7 +62,7 @@ splitter = RepeatedStratifiedKFold(
 # inputs. For each encoder, we try a log transform to compress large values.
 
 # %%
-model = LogisticRegression(C=1, max_iter=2000)
+model = LogisticRegression()
 
 encoding_options = [
     ("Target", target_encode_service_area()),
@@ -87,7 +87,10 @@ rows = []
 
 for encoding_name, encoder in encoding_options:
     for log_name, optional_log_steps in log_options:
-        numeric_steps = optional_log_steps + [numeric_median_imputer(), StandardScaler()]
+        numeric_steps = optional_log_steps + [
+            numeric_median_imputer(),
+            StandardScaler(),
+        ]
         preprocessing = combine_feature_steps(
             numeric=make_pipeline(*numeric_steps),
             service_area=encoder,
@@ -105,14 +108,16 @@ for encoding_name, encoder in encoding_options:
 
         ap = scores["test_average_precision"]
         auc = scores["test_roc_auc"]
-        rows.append([
-            encoding_name,
-            log_name,
-            ap.mean(),
-            ap.std(ddof=1),
-            auc.mean(),
-            auc.std(ddof=1),
-        ])
+        rows.append(
+            [
+                encoding_name,
+                log_name,
+                ap.mean(),
+                ap.std(ddof=1),
+                auc.mean(),
+                auc.std(ddof=1),
+            ]
+        )
 
 results = pd.DataFrame(
     rows,
