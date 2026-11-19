@@ -52,12 +52,12 @@ estimator = RandomForestClassifier(
     min_samples_leaf=20,
     max_features="sqrt",
     random_state=RANDOM_STATE,
-    n_jobs=1,
+    n_jobs=-1,
 )
 
 preprocessors = {
-    "Target encoding": make_preprocessor(encoding="target"),
-    "Frequency encoding": make_preprocessor(encoding="frequency"),
+    "Target encoding": make_preprocessor(encoding="target", dense=True),
+    "Frequency encoding": make_preprocessor(encoding="frequency", dense=True),
 }
 
 # %% [markdown]
