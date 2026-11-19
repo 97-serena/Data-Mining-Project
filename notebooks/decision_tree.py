@@ -25,34 +25,26 @@ from pathlib import Path
 
 import pandas as pd
 from IPython.display import display
-from sklearn.model_selection import RepeatedStratifiedKFold, cross_validate
-from sklearn.pipeline import make_pipeline
-from sklearn.preprocessing import OneHotEncoder
-from sklearn.tree import DecisionTreeClassifier
+from sklearn import model_selection as sk_selection
+from sklearn import pipeline as sk_pipeline
+from sklearn import preprocessing as sk_preprocessing
+from sklearn import tree as sk_tree
 
 project_root = Path.cwd()
 if not (project_root / "src" / "data.py").is_file():
     project_root = project_root.parent
 sys.path.insert(0, str(project_root))
 
-from src.data import RANDOM_STATE, load_train
-from src.preprocessing import (
-    ServiceAreaFrequencyEncoder,
-    combine_feature_steps,
-    numeric_median_imputer,
-    numeric_zero_imputer,
-    prepare_predictors,
-    target_encode_service_area,
-)
+from src import data, preprocessing
 
-train = load_train()
-X = prepare_predictors(train)
+train = data.load_train()
+X = preprocessing.prepare_predictors(train)
 y = train["churn"]
 
-splitter = RepeatedStratifiedKFold(
+splitter = sk_selection.RepeatedStratifiedKFold(
     n_splits=5,
     n_repeats=2,
-    random_state=RANDOM_STATE,
+    random_state=data.RANDOM_STATE,
 )
 
 # %% [markdown]
@@ -62,41 +54,43 @@ splitter = RepeatedStratifiedKFold(
 # rates, frequency encoding measures how common each area is, and one-hot
 # encoding creates a 0/1 column per area. We compare filling missing numeric values
 # with the training median or with zero.
+#
+# We fix the seed for repeatable results and use the other estimator defaults.
 
 # %%
-model = DecisionTreeClassifier()
+model = sk_tree.DecisionTreeClassifier(random_state=data.RANDOM_STATE)
 
 encoding_options = [
-    ("Target", target_encode_service_area()),
-    ("Frequency", ServiceAreaFrequencyEncoder()),
-    ("One-hot", OneHotEncoder(handle_unknown="ignore")),
+    ("Target", preprocessing.target_encode_service_area()),
+    ("Frequency", preprocessing.ServiceAreaFrequencyEncoder()),
+    ("One-hot", sk_preprocessing.OneHotEncoder(handle_unknown="ignore")),
 ]
 
 imputation_options = [
-    ("Median", numeric_median_imputer()),
-    ("Zero", numeric_zero_imputer()),
+    ("Median", preprocessing.numeric_median_imputer()),
+    ("Zero", preprocessing.numeric_zero_imputer()),
 ]
 
 # %% [markdown]
 # ## Performance before tuning
 #
-# We fit preprocessing and the model within each training fold. We report the
-# mean and standard deviation across ten validation splits for average precision
-# (finding churners while limiting false alarms) and ROC AUC (ranking churners
-# above customers who stay).
+# We fit each pipeline inside the same ten training folds and use mean average
+# precision (AP) to compare the preprocessing options. We also report ROC AUC
+# and how much both scores vary across folds.
 
 # %%
 rows = []
+ap_by_option = []
 
 for encoding_name, encoder in encoding_options:
     for imputation_name, imputer in imputation_options:
-        preprocessing = combine_feature_steps(
+        feature_steps = preprocessing.combine_feature_steps(
             numeric=imputer,
             service_area=encoder,
         )
-        pipeline = make_pipeline(preprocessing, model)
+        pipeline = sk_pipeline.make_pipeline(feature_steps, model)
 
-        scores = cross_validate(
+        scores = sk_selection.cross_validate(
             pipeline,
             X,
             y,
@@ -106,6 +100,7 @@ for encoding_name, encoder in encoding_options:
         )
 
         ap = scores["test_average_precision"]
+        ap_by_option.append(ap)
         auc = scores["test_roc_auc"]
         rows.append(
             [
@@ -123,13 +118,43 @@ results = pd.DataFrame(
     rows,
     columns=["Encoding", "Imputation", "AP mean", "AP SD", "ROC AUC mean", "ROC AUC SD"],
 )
-display(results.round(4))
 
 # %% [markdown]
-# Frequency encoding (needs checking).
+# ## Preprocessing decision
+#
+# **We choose frequency encoding and median imputation.** Mean AP was
+# 0.31091 (SD 0.00358). Target encoding with zero had the highest mean
+# and led on 8 of 10 folds. Its advantage was 0.00175 AP (paired SD
+# 0.00370), inside our 0.002 near-tie range. Frequency avoids estimating
+# churn rates by area and keeps one area column. With frequency fixed,
+# the two fills differed by 0.00004 AP, so we keep median as a typical value.
+#
+# On each fold we subtract our choice's AP from the alternative's AP. We show
+# the mean and SD of those differences and count the folds where the alternative led.
+
+# %%
+chosen_row = results.index[
+    results["Encoding"].eq("Frequency")
+    & results["Imputation"].eq("Median")
+][0]
+paired_ap = pd.DataFrame(ap_by_option).sub(ap_by_option[chosen_row], axis="columns")
+results["AP difference"] = paired_ap.mean(axis=1)
+results["Difference SD"] = paired_ap.std(axis=1, ddof=1)
+results["Folds ahead"] = paired_ap.gt(0).sum(axis=1)
+display(results.round(5))
+
+# %%
+chosen_features = preprocessing.combine_feature_steps(
+    numeric=preprocessing.numeric_median_imputer(),
+    service_area=preprocessing.ServiceAreaFrequencyEncoder(),
+)
+chosen_pipeline = sk_pipeline.make_pipeline(chosen_features, model)
 
 # %% [markdown]
 # ## Hyperparameter tuning
+#
+# We will tune only the estimator in `chosen_pipeline`, using validation AP.
+# The chosen preprocessing steps will fit again on each fold's training rows.
 #
 # Hyperparameters are settings we choose before fitting. We will tune `max_depth`
 # and `min_samples_leaf` to control tree depth and the minimum size of its leaves.

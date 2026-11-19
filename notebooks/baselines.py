@@ -24,42 +24,39 @@
 #   We use a fixed random seed so we can reproduce the scores.
 # - **Fixed tenure rule.** We assign a score of 1 to customers with 11–12
 #   months of service and 0 to everyone else, including missing tenure.
-#
-# We chose the tenure window while exploring the labelled training data,
-# so we use its validation score as a descriptive reference.
 
 # %%
-from pathlib import Path
 import sys
+from pathlib import Path
 
 import pandas as pd
 from IPython.display import display
-from sklearn.dummy import DummyClassifier
-from sklearn.model_selection import RepeatedStratifiedKFold, cross_validate
+from sklearn import dummy as sk_dummy
+from sklearn import model_selection as sk_selection
 
 project_root = Path.cwd()
 if not (project_root / "src" / "data.py").is_file():
     project_root = project_root.parent
 sys.path.insert(0, str(project_root))
 
-from src.baselines import TenureRule
-from src.data import RANDOM_STATE, load_train
-from src.preprocessing import prepare_predictors
+from src import baselines, data, preprocessing
 
-train = load_train()
-X = prepare_predictors(train)[["MonthsInService"]]
+train = data.load_train()
+X = preprocessing.prepare_predictors(train)[["MonthsInService"]]
 y = train["churn"]
 
-splitter = RepeatedStratifiedKFold(
+splitter = sk_selection.RepeatedStratifiedKFold(
     n_splits=5,
     n_repeats=2,
-    random_state=RANDOM_STATE,
+    random_state=data.RANDOM_STATE,
 )
 
-baselines = [
-    ("Constant churn rate", DummyClassifier(strategy="prior")),
-    ("Stratified random", DummyClassifier(strategy="stratified", random_state=RANDOM_STATE)),
-    ("Fixed tenure (11–12 months)", TenureRule()),
+baseline_options = [
+    ("Constant churn rate", sk_dummy.DummyClassifier(strategy="prior")),
+    ("Stratified random", sk_dummy.DummyClassifier(
+        strategy="stratified", random_state=data.RANDOM_STATE,
+    )),
+    ("Fixed tenure (11–12 months)", baselines.TenureRule()),
 ]
 
 # %% [markdown]
@@ -69,8 +66,8 @@ baselines = [
 # %%
 rows = []
 
-for baseline_name, model in baselines:
-    scores = cross_validate(
+for baseline_name, model in baseline_options:
+    scores = sk_selection.cross_validate(
         model,
         X,
         y,
@@ -89,4 +86,8 @@ results = pd.DataFrame(
 )
 display(results.round(4))
 
-# %%
+# %% [markdown]
+# Both the constant score and stratified random guess give AP around 0.288. A
+# constant score ties all customers, so its AP equals the churn rate. The
+# fixed tenure rule reaches about 0.313. The 11–12 month window came from
+# labelled training data, so we treat its score as an exploratory reference.
