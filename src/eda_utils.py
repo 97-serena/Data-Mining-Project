@@ -1,78 +1,7 @@
-"""feature groups and helpers for exploring customer churn"""
+"""Reusable helpers for exploring customer churn."""
 import matplotlib.pyplot as plt
 import pandas as pd
 from sklearn.metrics import roc_auc_score
-
-FEATURE_GROUPS = {
-    "account_billing": [
-        "MonthlyRevenue",
-        "TotalRecurringCharge",
-        "OverageMinutes",
-        "MonthsInService",
-        "CurrentEquipmentDays",
-        "Handsets",
-        "HandsetModels",
-        "UniqueSubs",
-        "ActiveSubs",
-        "AdjustmentsToCreditRating",
-    ],
-    "usage": [
-        "MonthlyMinutes",
-        "DirectorAssistedCalls",
-        "RoamingCalls",
-        "ThreewayCalls",
-        "ReceivedCalls",
-        "OutboundCalls",
-        "InboundCalls",
-        "PeakCallsInOut",
-        "OffPeakCallsInOut",
-        "CallForwardingCalls",
-        "CallWaitingCalls",
-    ],
-    "usage_change_retention": [
-        "PercChangeMinutes",
-        "PercChangeRevenues",
-        "RetentionCalls",
-        "RetentionOffersAccepted",
-        "MadeCallToRetentionTeam",
-        "ReferralsMadeBySubscriber",
-        "NewCellphoneUser",
-        "NotNewCellphoneUser",
-    ],
-    "service_quality": [
-        "DroppedCalls",
-        "BlockedCalls",
-        "UnansweredCalls",
-        "DroppedBlockedCalls",
-        "CustomerCareCalls",
-    ],
-    "demographics_region": [
-        "AgeHH1",
-        "AgeHH2",
-        "ChildrenInHH",
-        "IncomeGroup",
-        "Occupation",
-        "MaritalStatus",
-        "Homeownership",
-        "CreditRating",
-        "PrizmCode",
-        "ServiceArea",
-    ],
-    "handset_lifestyle": [
-        "HandsetPrice",
-        "HandsetRefurbished",
-        "HandsetWebCapable",
-        "TruckOwner",
-        "RVOwner",
-        "OwnsMotorcycle",
-        "OwnsComputer",
-        "HasCreditCard",
-        "BuysViaMailOrder",
-        "RespondsToMailOffers",
-        "OptOutMailings",
-        "NonUSTravel",
-    ],
-}
 
 # values that most likely mean "unknown" rather than a real value
 PLACEHOLDERS = {
@@ -201,25 +130,3 @@ def corr_heatmap(df, cols):
     plt.tight_layout()
     plt.show()
     return correlations
-
-
-def summary_skeleton():
-    """create an empty decision table to fill in during exploration"""
-    rows = [
-        {"group": group, "column": column}
-        for group, columns in FEATURE_GROUPS.items()
-        for column in columns
-    ]
-    table = pd.DataFrame(rows)
-    fields = [
-        "issues",
-        "relation_to_churn",
-        "keep_drop",
-        "missing_handling",
-        "transformation",
-        "encoding",
-        "feature_ideas",
-    ]
-    for field in fields:
-        table[field] = ""
-    return table.set_index("column")

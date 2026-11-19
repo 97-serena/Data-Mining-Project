@@ -1,4 +1,4 @@
-"""load data and create the fixed train/test split"""
+"""Read Cell2Cell records and the project's fixed train/test assignments."""
 from pathlib import Path
 
 import pandas as pd
@@ -12,17 +12,19 @@ TEST_SIZE = 0.2
 
 
 def load_raw():
-    """load all labelled customers with a binary churn column"""
-    df = pd.read_csv(DATA_PATH)
-    df["churn"] = (df["Churn"] == "Yes").astype(int)
+    """Load all labelled customers with the original and binary churn labels."""
+    return _with_churn_label(pd.read_csv(DATA_PATH))
+
+
+def _with_churn_label(df):
+    df["churn"] = df["Churn"].map({"No": 0, "Yes": 1})
+    if df["churn"].isna().any():
+        raise ValueError("Churn must contain only Yes and No labels")
     return df
 
 
 def make_split():
-    """save stratified customer assignments to the split file
-
-    running this again overwrites the existing split
-    """
+    """Overwrite the split file with reproducible, stratified customer assignments."""
     df = load_raw()
     train_ids, test_ids = train_test_split(
         df["CustomerID"],
@@ -38,13 +40,20 @@ def make_split():
 
 
 def load_train():
-    """load training customers with the original and binary churn labels"""
-    df = load_raw()
+    """Load only training customers in dataset order, with both churn labels."""
     split = pd.read_csv(SPLIT_PATH)
-    df = df.merge(split, on="CustomerID")
-    train = df[df["split"] == "train"]
-    train = train.drop(columns="split")
-    return train.reset_index(drop=True)
+    training_ids = split.loc[split["split"] == "train", "CustomerID"]
+    raw = pd.read_csv(DATA_PATH)
+    train = raw.loc[raw["CustomerID"].isin(training_ids)].reset_index(drop=True)
+    return _with_churn_label(train)
+
+
+def load_training_data():
+    """Return eligible predictors and binary churn labels from the fixed training partition."""
+    from src.features import PREDICTOR_COLUMNS
+
+    train = load_train()
+    return train.loc[:, list(PREDICTOR_COLUMNS)], train["churn"]
 
 
 if __name__ == "__main__":
