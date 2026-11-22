@@ -25,7 +25,9 @@ from pathlib import Path
 
 import pandas as pd
 from IPython.display import display
+from sklearn import base as sk_base
 from sklearn import ensemble as sk_ensemble
+from sklearn import inspection as sk_inspection
 from sklearn import model_selection as sk_selection
 from sklearn import pipeline as sk_pipeline
 
@@ -151,17 +153,174 @@ chosen_pipeline = sk_pipeline.make_pipeline(chosen_features, model)
 # %% [markdown]
 # ## Hyperparameter tuning
 #
-# We will tune only the estimator in `chosen_pipeline`, using validation AP.
-# The chosen preprocessing steps will fit again on each fold's training rows.
+# We tune only the estimator in `chosen_pipeline`, using validation AP.
+# The chosen preprocessing steps fit again on each fold's training rows.
 #
-# Hyperparameters are settings we choose before fitting. We will tune `max_features`
+# Hyperparameters are settings we choose before fitting. We tune `max_features`
 # and `min_samples_leaf` to control how many inputs each split considers and the
-# minimum size of tree leaves.
-# We will compare these settings on the training partition.
+# minimum size of tree leaves. Fewer inputs per split make the trees more
+# different from each other, and larger leaves stop trees from fitting single
+# customers. We keep 100 trees and the other defaults.
+#
+# We try every combination of four `max_features` values and five
+# `min_samples_leaf` values on the same ten folds as the preprocessing
+# comparison. We use the same near-tie rule as for preprocessing: among
+# settings within 0.002 AP of the top mean, we choose the simplest one, with
+# larger leaves first and then fewer inputs per split.
+
+# %%
+model_step = chosen_pipeline.steps[-1][0]
+max_features_options = ["sqrt", 0.2, 0.33, 0.5]
+min_samples_leaf_options = [1, 5, 10, 20, 50]
+
+search = sk_selection.GridSearchCV(
+    chosen_pipeline,
+    param_grid={
+        f"{model_step}__max_features": max_features_options,
+        f"{model_step}__min_samples_leaf": min_samples_leaf_options,
+    },
+    scoring=["average_precision", "roc_auc"],
+    cv=splitter,
+    refit=False,
+    error_score="raise",
+)
+search.fit(X, y)
+
+# %%
+cv_results = pd.DataFrame(search.cv_results_)
+n_folds = splitter.get_n_splits()
+fold_ap = cv_results[[f"split{i}_test_average_precision" for i in range(n_folds)]]
+fold_auc = cv_results[[f"split{i}_test_roc_auc" for i in range(n_folds)]]
+
+tuning = pd.DataFrame(
+    {
+        "max_features": cv_results[f"param_{model_step}__max_features"].astype(str),
+        "min_samples_leaf": cv_results[f"param_{model_step}__min_samples_leaf"].astype(int),
+        "AP mean": fold_ap.mean(axis=1),
+        "AP SD": fold_ap.std(axis=1, ddof=1),
+        "ROC AUC mean": fold_auc.mean(axis=1),
+        "ROC AUC SD": fold_auc.std(axis=1, ddof=1),
+    }
+)
+
+# "sqrt" considers about 7 of the 53 inputs, so it is the smallest option
+features_rank = {str(value): rank for rank, value in enumerate(max_features_options)}
+near_tie = tuning["AP mean"] >= tuning["AP mean"].max() - 0.002
+candidates = tuning[near_tie].assign(
+    features_rank=tuning["max_features"].map(features_rank)
+)
+chosen_setting = candidates.sort_values(
+    ["min_samples_leaf", "features_rank"], ascending=[False, True]
+).index[0]
+
+# On each fold we subtract the chosen setting's AP from each alternative's AP
+paired_tuning = fold_ap.sub(fold_ap.loc[chosen_setting].to_numpy(), axis="columns")
+tuning["AP difference"] = paired_tuning.mean(axis=1)
+tuning["Difference SD"] = paired_tuning.std(axis=1, ddof=1)
+tuning["Folds ahead"] = paired_tuning.gt(0).sum(axis=1)
+tuning["Near tie"] = near_tie
+
+print("Chosen setting:")
+display(tuning.loc[[chosen_setting]].round(5))
+display(tuning.sort_values("AP mean", ascending=False).round(5))
+
+# %%
+# show mean AP for each combination
+display(
+    tuning.pivot(index="min_samples_leaf", columns="max_features", values="AP mean")[
+        [str(value) for value in max_features_options]
+    ].round(4)
+)
+
+# %% [markdown]
+# ## Tuning decision
+#
+# **We choose `max_features=0.2` and `min_samples_leaf=20`.** Mean AP was
+# 0.44685 (SD 0.00681), up from 0.42856 with the default settings on the same
+# folds. Leaves of a single customer gave the lowest AP for every
+# `max_features` value, so the default trees fit the training rows too closely.
+# The top mean, 0.33 with leaves of 10, was higher by 0.00179 AP (paired SD
+# 0.00260) and led on 8 of 10 folds. This is inside our 0.002 near-tie range,
+# so we keep the larger leaves and fewer inputs per split. Four settings fall
+# in this range and their ROC AUC values differ by at most 0.0004.
+
+# %%
+tuned_pipeline = sk_base.clone(chosen_pipeline).set_params(
+    **cv_results.loc[chosen_setting, "params"]
+)
 
 # %% [markdown]
 # ## Feature importance
 #
-# Once we fit our chosen pipeline, we will read the tree model's built-in
-# `feature_importances_` and label the scores using the fitted preprocessing's
-# `get_feature_names_out()`. This measure can favor inputs with many split points.
+# We fit `tuned_pipeline` on the full training partition and read the forest's
+# built-in `feature_importances_`, labelled with the fitted preprocessing's
+# `get_feature_names_out()`. This impurity importance measures how much each
+# column reduces uncertainty in the training splits. It can favor inputs with
+# many split points, such as continuous values, and it splits the credit for a
+# category across its one-hot columns.
+#
+# As a check, we also measure permutation importance on validation rows. On each
+# fold of the first repeat, we fit the pipeline on the training rows, shuffle one
+# input at a time in the validation rows and record how much AP drops. Shuffling
+# acts on the prepared inputs before encoding, so each category and its
+# missing-value indicator count as one input. Correlated inputs can share
+# credit: shuffling one leaves the other available, so both can look less
+# important than they are together.
+
+# %%
+tuned_pipeline.fit(X, y)
+fitted_features = tuned_pipeline[0]
+fitted_forest = tuned_pipeline[-1]
+
+impurity_importance = pd.Series(
+    fitted_forest.feature_importances_,
+    index=fitted_features.get_feature_names_out(),
+    name="Impurity importance",
+).sort_values(ascending=False)
+display(impurity_importance.head(15).round(4).to_frame())
+
+# %%
+# the first five splits form one complete repeat of the five folds
+first_repeat = list(splitter.split(X, y))[:5]
+
+permutation_rows = []
+for train_rows, valid_rows in first_repeat:
+    fold_pipeline = sk_base.clone(tuned_pipeline).fit(X.iloc[train_rows], y.iloc[train_rows])
+    permutation = sk_inspection.permutation_importance(
+        fold_pipeline,
+        X.iloc[valid_rows],
+        y.iloc[valid_rows],
+        scoring="average_precision",
+        n_repeats=5,
+        random_state=data.RANDOM_STATE,
+    )
+    permutation_rows.append(pd.Series(permutation.importances_mean, index=X.columns))
+
+fold_permutation = pd.DataFrame(permutation_rows)
+permutation_importance = pd.DataFrame(
+    {
+        "AP drop mean": fold_permutation.mean(),
+        "AP drop SD": fold_permutation.std(ddof=1),
+        "Folds with a drop": fold_permutation.gt(0).sum(),
+    }
+).sort_values("AP drop mean", ascending=False)
+display(permutation_importance.head(15).round(4))
+
+# %% [markdown]
+# ## What the importance measures show
+#
+# Both measures rank the same four inputs highest: `CurrentEquipmentDays`,
+# `MonthsInService`, `MonthlyMinutes` and `PercChangeMinutes`. Shuffling one of
+# them lowers validation AP by 0.024 to 0.043 on every fold. Shuffling any
+# other single input lowers AP by less than 0.01.
+#
+# The measures disagree for some inputs. `MonthlyRevenue`, `ServiceArea` and
+# `UnansweredCalls` rank in the top 12 by impurity, but shuffling them lowers AP
+# by at most 0.002. They have many distinct values, which favors them in impurity
+# importance. Revenue also overlaps with `TotalRecurringCharge` and
+# `OverageMinutes`. `CreditRating` ranks sixth by permutation but does not reach
+# the top 20 by impurity, because its credit is split across one-hot columns.
+#
+# Many household and lifestyle flags change AP by less than 0.0005. These
+# results describe what this forest uses to rank customers. They do not show
+# that an input causes churn.
