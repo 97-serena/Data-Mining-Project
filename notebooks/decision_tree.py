@@ -55,6 +55,13 @@ splitter = sk_selection.RepeatedStratifiedKFold(
 # encoding creates a 0/1 column per area. We compare filling missing numeric values
 # with the training median or with zero.
 #
+# Data exploration found 730 service-area levels including the missing marker.
+# Many have fewer than 20 training customers. Frequency and target encoding
+# each represent area with one column.
+# All options use the same predictors, with mode imputation for yes/no inputs
+# and one-hot encoding for the other categorical inputs. Numeric and yes/no
+# imputation retain missingness indicators, and we keep numeric values unscaled.
+#
 # We fix the seed for repeatable results and use the other estimator defaults.
 
 # %%
@@ -97,6 +104,7 @@ for encoding_name, encoder in encoding_options:
             cv=splitter,
             scoring=["average_precision", "roc_auc"],
             error_score="raise",
+            n_jobs=4,
         )
 
         ap = scores["test_average_precision"]
@@ -123,11 +131,11 @@ results = pd.DataFrame(
 # ## Preprocessing decision
 #
 # **We choose frequency encoding and median imputation.** Mean AP was
-# 0.31091 (SD 0.00358). Target encoding with zero had the highest mean
-# and led on 8 of 10 folds. Its advantage was 0.00175 AP (paired SD
-# 0.00370), inside our 0.002 near-tie range. Frequency avoids estimating
-# churn rates by area and keeps one area column. With frequency fixed,
-# the two fills differed by 0.00004 AP, so we keep median as a typical value.
+# 0.31145 (SD 0.00283). One-hot encoding with zero had the highest mean AP
+# (0.31190) and led on 5 of 10 folds. Its advantage was 0.00044 AP (paired
+# SD 0.00304), inside our 0.002 near-tie range. Frequency keeps one area
+# column and uses only counts. With frequency fixed, median fill led
+# zero fill by 0.00118 AP on average and uses a typical observed value.
 #
 # On each fold we subtract our choice's AP from the alternative's AP. We show
 # the mean and SD of those differences and count the folds where the alternative led.
@@ -153,16 +161,82 @@ chosen_pipeline = sk_pipeline.make_pipeline(chosen_features, model)
 # %% [markdown]
 # ## Hyperparameter tuning
 #
-# We will tune only the estimator in `chosen_pipeline`, using validation AP.
-# The chosen preprocessing steps will fit again on each fold's training rows.
+# We tune only the decision tree in `chosen_pipeline`, using grid search on
+# the same ten validation splits. We keep frequency encoding and median
+# imputation fixed and fit both on each fold's training rows.
 #
-# Hyperparameters are settings we choose before fitting. We will tune `max_depth`
-# and `min_samples_leaf` to control tree depth and the minimum size of its leaves.
-# We will compare these settings on the training partition.
+# Hyperparameters are settings we choose before fitting. We tune `max_depth`
+# to limit the depth of the tree, `min_samples_leaf` to set the minimum number
+# of training customers per leaf, and `class_weight` to compare unweighted
+# and balanced training.
+#
+# We select the settings with the highest mean validation AP and report
+# ROC AUC alongside it. Grid search then refits the selected pipeline on
+# the full training partition.
+
+# %%
+param_grid = {
+    "decisiontreeclassifier__max_depth": [2, 3, 4, 5, 6, 8, 10],
+    "decisiontreeclassifier__min_samples_leaf": [25, 100, 250, 500],
+    "decisiontreeclassifier__class_weight": [None, "balanced"],
+}
+search = sk_selection.GridSearchCV(
+    estimator=chosen_pipeline,
+    param_grid=param_grid,
+    scoring=["average_precision", "roc_auc"],
+    refit="average_precision",
+    cv=splitter,
+    error_score="raise",
+    n_jobs=4,
+)
+search.fit(X, y)
+final_pipeline = search.best_estimator_
+
+# %%
+tuning_results = pd.DataFrame(
+    {
+        "Max depth": search.cv_results_["param_decisiontreeclassifier__max_depth"],
+        "Min samples per leaf": search.cv_results_[
+            "param_decisiontreeclassifier__min_samples_leaf"
+        ],
+        "Class weight": search.cv_results_["param_decisiontreeclassifier__class_weight"],
+        "AP mean": search.cv_results_["mean_test_average_precision"],
+        "ROC AUC mean": search.cv_results_["mean_test_roc_auc"],
+    }
+)
+tuning_results["Class weight"] = tuning_results["Class weight"].fillna("Unweighted")
+tuning_results = tuning_results.sort_values("AP mean", ascending=False, kind="stable")
+display(tuning_results.head(10).round(5))
+
+comparison = pd.DataFrame(
+    [
+        results.loc[chosen_row, ["AP mean", "ROC AUC mean"]],
+        tuning_results.loc[search.best_index_, ["AP mean", "ROC AUC mean"]],
+    ],
+    index=["Default tree", "Tuned tree"],
+)
+display(comparison.round(5))
+
+# %% [markdown]
+# The highest mean validation AP in this grid was 0.40061 with a depth limit
+# of 10, a minimum of 250 customers per leaf, and balanced class weights.
+# With the same depth and leaf size, the unweighted tree reached 0.39984 AP.
+# The tuned tree improved on the default tree's 0.31145 AP, and its ROC AUC
+# rose from 0.54643 to 0.63968. These are development scores from the training
+# partition. We reserve test evaluation for the final model comparison.
 
 # %% [markdown]
 # ## Feature importance
 #
-# Once we fit our chosen pipeline, we will read the tree model's built-in
-# `feature_importances_` and label the scores using the fitted preprocessing's
-# `get_feature_names_out()`. This measure can favor inputs with many split points.
+# Each score is the share of the fitted tree's total weighted impurity reduction
+# attributed to splits on that transformed feature. Larger scores indicate a
+# greater contribution. This measure can favor features with many possible split points.
+
+# %%
+processor, tree = final_pipeline[0], final_pipeline[-1]
+names = processor.get_feature_names_out()
+feature_importance = pd.DataFrame({
+    "Feature": names,
+    "Importance": tree.feature_importances_,
+}).sort_values("Importance", ascending=False, ignore_index=True)
+display(feature_importance.head(15).round(5))
