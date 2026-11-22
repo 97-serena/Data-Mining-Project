@@ -184,7 +184,8 @@ search = sk_selection.GridSearchCV(
     refit=False,
     error_score="raise",
 )
-search.fit(X, y)
+# store the return value so the notebook does not try to draw the search object
+_ = search.fit(X, y)
 
 # %%
 cv_results = pd.DataFrame(search.cv_results_)
