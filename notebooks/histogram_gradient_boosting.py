@@ -23,11 +23,13 @@
 import sys
 from pathlib import Path
 
+import matplotlib.pyplot as plt
 import pandas as pd
 from IPython.display import display
 from joblib import parallel_config
 from sklearn import base as sk_base
 from sklearn import ensemble as sk_ensemble
+from sklearn import inspection as sk_inspection
 from sklearn import model_selection as sk_selection
 from sklearn import pipeline as sk_pipeline
 
@@ -42,8 +44,9 @@ train = data.load_train()
 X = preprocessing.prepare_predictors(train)
 y = train["churn"]
 
+N_SPLITS = 5
 splitter = sk_selection.RepeatedStratifiedKFold(
-    n_splits=5,
+    n_splits=N_SPLITS,
     n_repeats=2,
     random_state=data.RANDOM_STATE,
 )
@@ -226,6 +229,26 @@ print("Chosen hyperparameters")
 display(tuning.loc[[chosen_setting]].round(5))
 display(tuning.sort_values("AP mean", ascending=False).round(5))
 
+# %% [markdown]
+# ## Tuning decision
+#
+# **We choose `learning_rate=0.10`, `max_iter=200`, and `max_leaf_nodes=15`.**
+# The best grid result used 400 rounds at a learning rate of 0.05 and the same
+# leaf limit. Its mean AP was 0.00149 higher, within our near-tie range, so we
+# choose the 200-round model.
+
+# %%
+tuned_pipeline = sk_base.clone(fixed_round_pipeline).set_params(
+    **cv_results.loc[chosen_setting, "params"]
+)
+_ = tuned_pipeline.fit(X, y)
+
+# %% [markdown]
+# ## Model evaluation
+#
+# We compare the default and tuned estimators with the chosen preprocessing.
+# These development scores use the ten validation folds that informed tuning.
+
 # %%
 metrics = ["AP mean", "AP SD", "ROC AUC mean"]
 comparison = pd.DataFrame(
@@ -234,20 +257,66 @@ comparison = pd.DataFrame(
 )
 display(comparison.round(5))
 
-tuned_pipeline = sk_base.clone(fixed_round_pipeline).set_params(
-    **cv_results.loc[chosen_setting, "params"]
-)
-_ = tuned_pipeline.fit(X, y)
+ap_gain = fold_ap.loc[chosen_setting].to_numpy() - ap_by_option[chosen_row]
+print(f"The tuned model leads on {(ap_gain > 0).sum()} of {n_folds} folds by AP.")
 
 # %% [markdown]
-# ## Tuning decision
+# ## Top 10 features by permutation importance
 #
-# **We choose `learning_rate=0.10`, `max_iter=200`, and `max_leaf_nodes=15`.**
-# The best grid result used 400 rounds at a learning rate of 0.05 and the same
-# leaf limit. Its mean AP was 0.00149 higher, within our near-tie range, so we
-# choose the 200-round model.
+# We refit the tuned pipeline on each training fold in the first repeat. Its
+# five validation folds cover every training customer once. On each validation
+# fold, we shuffle each input five times and measure how much AP drops. We
+# shuffle before feature encoding so that a categorical input and all its
+# encoded columns count as one feature. We rank inputs by mean AP drop over
+# the five folds. Correlated inputs can substitute for each other and share
+# importance.
+
+# %%
+first_repeat = list(splitter.split(X, y))[:N_SPLITS]
+permutation_rows = []
+with parallel_config(backend="loky", inner_max_num_threads=1):
+    for fit_rows, valid_rows in first_repeat:
+        fold_pipeline = sk_base.clone(tuned_pipeline).fit(X.iloc[fit_rows], y.iloc[fit_rows])
+        permutation = sk_inspection.permutation_importance(
+            fold_pipeline,
+            X.iloc[valid_rows],
+            y.iloc[valid_rows],
+            scoring="average_precision",
+            n_repeats=5,
+            n_jobs=N_JOBS,
+            random_state=data.RANDOM_STATE,
+        )
+        permutation_rows.append(permutation.importances_mean)
+
+fold_permutation = pd.DataFrame(permutation_rows, columns=X.columns)
+feature_importance = pd.DataFrame(
+    {
+        "Mean AP drop": fold_permutation.mean(),
+        "AP drop SD": fold_permutation.std(ddof=1),
+        "Folds with a drop": fold_permutation.gt(0).sum(),
+    }
+).sort_values("Mean AP drop", ascending=False)
+feature_importance.index.name = "Feature"
+top_features = feature_importance.head(10)
+display(top_features.round(5))
+
+# %%
+ax = top_features["Mean AP drop"].iloc[::-1].plot.barh(figsize=(8, 4), color="#237E80")
+ax.set_xlabel("Mean validation AP drop after shuffling")
+ax.set_ylabel("")
+plt.tight_layout()
+plt.show()
+
+# %% [markdown]
+# `MonthlyMinutes` and `PercChangeMinutes` rank highest. Shuffling them lowers
+# AP by 0.07434 and 0.06052 on average. Each of the top 10 inputs lowers AP on
+# all five folds when shuffled.
+
+# %% [markdown]
+# ## Final test evaluation
 #
-# With the chosen preprocessing, mean validation AP rose from 0.45201 at
-# the defaults to 0.45703. Mean ROC AUC rose from 0.67600 to 0.67846. We fit
-# `tuned_pipeline` on the full training partition and reserve the test split
-# for final evaluation.
+# Before using the reserved test split, we use the training partition to
+# settle the model comparison and fix the outreach budget. We then fit the
+# frozen pipelines on the full training partition and score them and the
+# baselines on the same test customers. We report test AP and ROC AUC, plus
+# precision and recall at the agreed budget. See [Model comparison](model_comparison.py).
