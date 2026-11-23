@@ -2,6 +2,8 @@
 
 We estimate which customers may leave so we can combine churn risk with customer value when deciding whom to contact. We use the Cell2Cell dataset, which contains 51,047 labelled customers. About 29% churned.
 
+See the [project report](report/README.md) for LaTeX build instructions.
+
 ## Run the notebooks
 
 From the repository root, we use [uv](https://docs.astral.sh/uv/getting-started/installation/) to set up the shared Python version and dependencies.

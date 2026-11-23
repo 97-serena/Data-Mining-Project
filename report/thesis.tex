@@ -1,0 +1,65 @@
+% Do not change document class, margins, fonts, etc.
+\documentclass[a4paper,oneside,bibliography=totoc]{scrbook}
+
+% some useful packages (add more as needed)
+\usepackage[utf8]{inputenc}
+\usepackage{graphicx}
+\usepackage{latexsym}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{tabularx}
+\usepackage{booktabs}
+\usepackage{algorithm} % you can modify the algorithm style to your liking
+\counterwithin{algorithm}{chapter} % so that algorithms have chapter numbers as well
+\usepackage{algorithmic}
+\usepackage{csquotes}
+\renewcommand{\algorithmiccomment}[1]{\hfill\textit{// #1}}
+\usepackage[usenames,dvipsnames]{xcolor}
+\usepackage[colorlinks,citecolor=Green]{hyperref} % you may change/remove the colors
+\usepackage{lipsum} % you do not need this
+
+% chicago citation style
+\usepackage{natbib}
+\bibliographystyle{chicagoa}
+\setcitestyle{authoryear,round,semicolon,aysep={},yysep={,}} \let\cite\citep
+
+% example enviroments (add more as needed)
+\newtheorem{definition}{Definition} \newtheorem{proposition}{Proposition}
+
+\begin{document}
+
+\frontmatter
+\subject{IE500 Data Mining Project Report}
+\title{Predicting Telecom Customer Churn}
+\author{} % Add the authors and matriculation numbers.
+\date{} % Add the submission date.
+\publishers{{\small Submitted to}\\
+  Data and Web Science Group\\
+  University of Mannheim\\}
+\maketitle
+
+\input{frontmatter/abstract}
+
+% table of contents
+\begingroup%
+\hypersetup{hidelinks}% disable link color in TOC only
+\tableofcontents%
+\endgroup
+
+\mainmatter
+\input{chapters/business-understanding}
+\input{chapters/data-understanding}
+\input{chapters/preprocessing}
+\input{chapters/external-knowledge}
+\input{chapters/ml-approaches}
+\input{chapters/evaluation}
+\input{chapters/result}
+
+% Uncomment when the report cites an entry from references.bib.
+% \bibliography{references}
+
+\backmatter
+% Uncomment if the submission calls for the DWS declaration.
+% \input{backmatter/declaration}
+
+\end{document}
