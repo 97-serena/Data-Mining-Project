@@ -1,6 +1,6 @@
 """Prepare prediction inputs and define shared feature processing for Cell2Cell."""
 
-from typing import Self
+from typing import Literal, Self
 
 import numpy as np
 import pandas as pd
@@ -130,14 +130,14 @@ def target_encode_service_area() -> TargetEncoder:
 
 def combine_feature_steps(
     *,
-    numeric: BaseEstimator,
+    numeric: BaseEstimator | Literal["passthrough"],
     service_area: BaseEstimator,
 ) -> ColumnTransformer:
     """Attach explicit numeric and ServiceArea steps to the prepared inputs.
 
+    Use "passthrough" to let the model handle missing numeric values.
     Use mode imputation for yes/no columns and one-hot encoding for other
-    categories. The caller can set the column transformer's sparse_threshold
-    to 0.0 for models that use dense input.
+    categories. The caller can set sparse_threshold to 0.0 for dense input.
     """
     binary_imputer = SimpleImputer(
         strategy="most_frequent", add_indicator=True, keep_empty_features=True,

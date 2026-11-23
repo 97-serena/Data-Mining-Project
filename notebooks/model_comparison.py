@@ -54,7 +54,7 @@
 # | [Gaussian naive Bayes](gaussian_naive_bayes.py) | Frequency | Log, median fill |
 # | [Decision tree](decision_tree.py) | Frequency | Median fill |
 # | [Random forest](random_forest.py) | Frequency | Median fill |
-# | [Histogram gradient boosting](histogram_gradient_boosting.py) | Frequency | Median fill |
+# | [Histogram gradient boosting](histogram_gradient_boosting.py) | Frequency | Native missing values |
 #
 # Next we will vary the model hyperparameters and use validation AP to compare
 # them. Each run will fit the chosen preprocessing on that fold's training rows.
