@@ -23,6 +23,7 @@
 import sys
 from pathlib import Path
 
+import matplotlib.pyplot as plt
 import pandas as pd
 from IPython.display import display
 from sklearn import base as sk_base
@@ -42,11 +43,14 @@ train = data.load_train()
 X = preprocessing.prepare_predictors(train)
 y = train["churn"]
 
+N_SPLITS = 5
 splitter = sk_selection.RepeatedStratifiedKFold(
-    n_splits=5,
+    n_splits=N_SPLITS,
     n_repeats=2,
     random_state=data.RANDOM_STATE,
 )
+AP_TOLERANCE = 0.002
+N_JOBS = 4
 
 # %% [markdown]
 # ## Preprocessing options
@@ -55,10 +59,10 @@ splitter = sk_selection.RepeatedStratifiedKFold(
 # encoding (how common each area is). We compare filling missing numeric values
 # with the training median or with zero.
 #
-# We fix the seed and use all available cores. Other settings use defaults.
+# We fix the seed and build the trees on `N_JOBS` cores. Other settings use defaults.
 
 # %%
-model = sk_ensemble.RandomForestClassifier(random_state=data.RANDOM_STATE, n_jobs=-1)
+model = sk_ensemble.RandomForestClassifier(random_state=data.RANDOM_STATE, n_jobs=N_JOBS)
 
 encoding_options = [
     ("Target", preprocessing.target_encode_service_area()),
@@ -206,7 +210,7 @@ tuning = pd.DataFrame(
 
 # "sqrt" considers about 7 of the 53 inputs, so it is the smallest option
 features_rank = {str(value): rank for rank, value in enumerate(max_features_options)}
-near_tie = tuning["AP mean"] >= tuning["AP mean"].max() - 0.002
+near_tie = tuning["AP mean"] >= tuning["AP mean"].max() - AP_TOLERANCE
 candidates = tuning[near_tie].assign(
     features_rank=tuning["max_features"].map(features_rank)
 )
@@ -249,44 +253,41 @@ display(
 tuned_pipeline = sk_base.clone(chosen_pipeline).set_params(
     **cv_results.loc[chosen_setting, "params"]
 )
+_ = tuned_pipeline.fit(X, y)
 
 # %% [markdown]
-# ## Feature importance
+# ## Model evaluation
 #
-# We fit `tuned_pipeline` on the full training partition and read the forest's
-# built-in `feature_importances_`, labelled with the fitted preprocessing's
-# `get_feature_names_out()`. This impurity importance measures how much each
-# column reduces uncertainty in the training splits. It can favor inputs with
-# many split points, such as continuous values, and it splits the credit for a
-# category across its one-hot columns.
-#
-# As a check, we also measure permutation importance on validation rows. On each
-# fold of the first repeat, we fit the pipeline on the training rows, shuffle one
-# input at a time in the validation rows and record how much AP drops. Shuffling
-# acts on the prepared inputs before encoding, so each category and its
-# missing-value indicator count as one input. Correlated inputs can share
-# credit: shuffling one leaves the other available, so both can look less
-# important than they are together.
+# We compare the default and tuned forests with the chosen preprocessing.
+# These development scores use the ten validation folds that informed tuning.
 
 # %%
-tuned_pipeline.fit(X, y)
-fitted_features = tuned_pipeline[0]
-fitted_forest = tuned_pipeline[-1]
+metrics = ["AP mean", "AP SD", "ROC AUC mean"]
+comparison = pd.DataFrame(
+    [results.loc[chosen_row, metrics], tuning.loc[chosen_setting, metrics]],
+    index=["Default forest", "Tuned forest"],
+)
+display(comparison.round(5))
 
-impurity_importance = pd.Series(
-    fitted_forest.feature_importances_,
-    index=fitted_features.get_feature_names_out(),
-    name="Impurity importance",
-).sort_values(ascending=False)
-display(impurity_importance.head(15).round(4).to_frame())
+ap_gain = fold_ap.loc[chosen_setting].to_numpy() - ap_by_option[chosen_row]
+print(f"The tuned model leads on {(ap_gain > 0).sum()} of {n_folds} folds by AP.")
+
+# %% [markdown]
+# ## Top 10 features by permutation importance
+#
+# We refit the tuned pipeline on each training fold in the first repeat. Its
+# five validation folds cover every training customer once. On each validation
+# fold, we shuffle each input five times and measure how much AP drops. We
+# shuffle before feature encoding so that a categorical input and all its
+# encoded columns count as one feature. We rank inputs by mean AP drop over
+# the five folds. Correlated inputs can substitute for each other and share
+# importance.
 
 # %%
-# the first five splits form one complete repeat of the five folds
-first_repeat = list(splitter.split(X, y))[:5]
-
+first_repeat = list(splitter.split(X, y))[:N_SPLITS]
 permutation_rows = []
-for train_rows, valid_rows in first_repeat:
-    fold_pipeline = sk_base.clone(tuned_pipeline).fit(X.iloc[train_rows], y.iloc[train_rows])
+for fit_rows, valid_rows in first_repeat:
+    fold_pipeline = sk_base.clone(tuned_pipeline).fit(X.iloc[fit_rows], y.iloc[fit_rows])
     permutation = sk_inspection.permutation_importance(
         fold_pipeline,
         X.iloc[valid_rows],
@@ -295,17 +296,48 @@ for train_rows, valid_rows in first_repeat:
         n_repeats=5,
         random_state=data.RANDOM_STATE,
     )
-    permutation_rows.append(pd.Series(permutation.importances_mean, index=X.columns))
+    permutation_rows.append(permutation.importances_mean)
 
-fold_permutation = pd.DataFrame(permutation_rows)
-permutation_importance = pd.DataFrame(
+fold_permutation = pd.DataFrame(permutation_rows, columns=X.columns)
+feature_importance = pd.DataFrame(
     {
-        "AP drop mean": fold_permutation.mean(),
+        "Mean AP drop": fold_permutation.mean(),
         "AP drop SD": fold_permutation.std(ddof=1),
         "Folds with a drop": fold_permutation.gt(0).sum(),
     }
-).sort_values("AP drop mean", ascending=False)
-display(permutation_importance.head(15).round(4))
+).sort_values("Mean AP drop", ascending=False)
+feature_importance.index.name = "Feature"
+top_features = feature_importance.head(10)
+display(top_features.round(5))
+
+# %%
+ax = top_features["Mean AP drop"].iloc[::-1].plot.barh(figsize=(8, 4), color="#237E80")
+ax.set_xlabel("Mean validation AP drop after shuffling")
+ax.set_ylabel("")
+plt.tight_layout()
+plt.show()
+
+# %% [markdown]
+# ## Built-in importance
+#
+# As a supplement, we read the forest's built-in `feature_importances_` from
+# the tuned pipeline fitted on the full training partition, labelled with the
+# fitted preprocessing's `get_feature_names_out()`. This impurity importance
+# measures how much each column reduces uncertainty in the training splits. It
+# can favor inputs with many split points, such as continuous values, and it
+# splits the credit for a category across its one-hot columns.
+
+# %%
+fitted_features = tuned_pipeline[0]
+fitted_forest = tuned_pipeline[-1]
+
+impurity_importance = pd.Series(
+    fitted_forest.feature_importances_,
+    index=fitted_features.get_feature_names_out(),
+    name="Impurity importance",
+).sort_values(ascending=False)
+impurity_importance.index.name = "Feature"
+display(impurity_importance.head(10).round(5).to_frame())
 
 # %% [markdown]
 # ## What the importance measures show
@@ -316,8 +348,8 @@ display(permutation_importance.head(15).round(4))
 # other single input lowers AP by less than 0.01.
 #
 # The measures disagree for some inputs. `MonthlyRevenue`, `ServiceArea` and
-# `UnansweredCalls` rank in the top 12 by impurity, but shuffling them lowers AP
-# by at most 0.002. They have many distinct values, which favors them in impurity
+# `UnansweredCalls` rank fifth, seventh and twelfth by impurity, but shuffling
+# them lowers AP by at most 0.002. They have many distinct values, which favors them in impurity
 # importance. Revenue also overlaps with `TotalRecurringCharge` and
 # `OverageMinutes`. `CreditRating` ranks sixth by permutation but does not reach
 # the top 20 by impurity, because its credit is split across one-hot columns.
