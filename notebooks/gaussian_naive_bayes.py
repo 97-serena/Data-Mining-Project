@@ -38,7 +38,7 @@ if not (project_root / "src" / "data.py").is_file():
     project_root = project_root.parent
 sys.path.insert(0, str(project_root))
 
-from src import data, preprocessing
+from src import data, evaluation, preprocessing
 
 train = data.load_train()
 X = preprocessing.prepare_predictors(train)
@@ -267,6 +267,134 @@ display(comparison.round(5))
 # Compare AP on matching folds so each pair uses the same validation rows.
 ap_gain = fold_ap.loc[chosen_setting].to_numpy() - ap_by_option[chosen_row]
 print(f"The tuned model leads on {(ap_gain > 0).sum()} of {n_folds} folds by AP.")
+
+# %% [markdown]
+# ## Outreach at a fixed contact budget
+#
+# AP and ROC AUC do not need a cut-off. To describe a retention campaign, we
+# rank each validation fold by predicted churn probability and contact the top
+# 10% of customers. We also show 5% and 20% to see how results change with the
+# budget. Precision is the share of contacted customers who churn, recall is
+# the share of all churners we contact, and lift is precision divided by the
+# fold's churn rate. Random contact gives a lift of 1.
+#
+# We refit the default and tuned models on the same ten training folds. The
+# test set stays unused.
+
+# %%
+CONTACT_SHARES = [0.05, 0.10, 0.20]
+EVALUATION_SHARE = 0.10
+
+default_name, tuned_name = comparison.index
+pipelines = {default_name: chosen_pipeline, tuned_name: tuned_pipeline}
+outreach_rows = []
+# Each customer appears once in the validation folds of the first repeat
+contacted_first_repeat = pd.Series(False, index=X.index)
+
+for fold, (fit_rows, valid_rows) in enumerate(splitter.split(X, y)):
+    y_valid = y.iloc[valid_rows]
+    for name, pipeline in pipelines.items():
+        fold_pipeline = sk_base.clone(pipeline).fit(X.iloc[fit_rows], y.iloc[fit_rows])
+        churn_probability = fold_pipeline.predict_proba(X.iloc[valid_rows])[:, 1]
+        for share in CONTACT_SHARES:
+            outreach_rows.append(
+                {
+                    "Model": name,
+                    "Contact share": share,
+                    "Fold": fold,
+                    **evaluation.outreach_scores(y_valid, churn_probability, share),
+                }
+            )
+        if name == tuned_name and fold < N_SPLITS:
+            contacted_first_repeat.iloc[valid_rows] = evaluation.contact_top(
+                churn_probability, EVALUATION_SHARE
+            )
+
+outreach = pd.DataFrame(outreach_rows)
+display(
+    outreach.groupby(["Contact share", "Model"])[["Precision", "Recall", "Lift"]]
+    .agg(["mean", "std"])
+    .round(4)
+)
+
+precision_by_fold = outreach.pivot_table(
+    index=["Contact share", "Fold"], columns="Model", values="Precision"
+)
+precision_gain = precision_by_fold[tuned_name] - precision_by_fold[default_name]
+print("Tuned model folds ahead on precision, by contact share:")
+print(precision_gain.gt(0).groupby(level="Contact share").sum().to_string())
+
+# %%
+confusion = pd.crosstab(
+    y.map({1: "Churned", 0: "Stayed"}).rename("Actual"),
+    contacted_first_repeat.map({True: "Contacted", False: "Not contacted"}).rename("Outreach"),
+)
+print(f"{tuned_name}, top {EVALUATION_SHARE:.0%} of each validation fold in the first repeat")
+display(confusion)
+
+# %% [markdown]
+# ## Outreach results
+#
+# **Contacting the top 10%, 41.2% of contacted customers churn with the tuned
+# model (SD 1.4 points), compared with 28.8% for random contact (lift 1.43).**
+# This reaches 14.3% of all churners. The default model reached 40.5%. The
+# tuned model had higher precision on 7 of 10 folds at 5%, 8 of 10 at 10% and
+# 5 of 10 at 20%. A smaller budget raises precision but reaches fewer churners:
+# 46.5% precision and 8.1% recall at 5%, and 37.1% and 25.7% at 20%.
+#
+# In the first repeat, the top 10% contained 1,686 churners and 2,399 customers
+# who stayed, so most contacts went to customers who stayed. The other 10,083
+# churners were not contacted. The team still has to agree on the contact
+# budget before the final test evaluation.
+
+# %% [markdown]
+# ## Cost of outreach
+#
+# We give each outcome a cost per customer. These amounts are assumptions for
+# illustration, and the team still has to agree on them.
+#
+# - Each contact costs `CONTACT_COST`, for example a call and a discount.
+# - A churner we do not keep costs `CHURN_LOSS`, set to 12 months of the
+#   median monthly revenue in the training data.
+# - A share `SAVE_RATE` of contacted churners stay because of the contact.
+#
+# We compare each contact budget with no campaign, where every churner leaves.
+# Savings are shown per 1,000 customers and averaged over the ten validation folds.
+
+# %%
+CONTACT_COST = 20
+CHURN_LOSS = 12 * train["MonthlyRevenue"].median()
+SAVE_RATE = 0.20
+
+cost_matrix = evaluation.cost_matrix(CONTACT_COST, CHURN_LOSS, SAVE_RATE)
+print("Cost per customer")
+display(cost_matrix.round(2))
+
+outreach["Savings per 1,000 customers"] = evaluation.savings_per_1000(outreach, cost_matrix)
+display(
+    outreach.pivot_table(
+        index="Contact share",
+        columns="Model",
+        values="Savings per 1,000 customers",
+        aggfunc="mean",
+    ).round(0)
+)
+
+# Contacting a customer pays off when precision exceeds this value
+print(f"Break-even precision: {CONTACT_COST / (SAVE_RATE * CHURN_LOSS):.1%}")
+
+# %% [markdown]
+# ## Cost results
+#
+# **With these assumptions, contacting the top 10% chosen by the tuned model
+# saves about $2,790 per 1,000 customers compared with no campaign.** The
+# default model saves about $2,710. Savings are about $1,710 at 5% and $4,630
+# at 20%, where the default model saves slightly more ($4,660).
+#
+# A contact pays off when precision exceeds 17.2%. Even random contact
+# reaches 28.8%, so under these assumptions a larger budget always saves more.
+# A higher contact cost or a lower save rate would raise this break-even point
+# and favor a smaller budget. The result depends on the assumed amounts.
 
 # %% [markdown]
 # ## Top 10 features by permutation importance

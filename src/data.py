@@ -45,6 +45,18 @@ def load_train() -> pd.DataFrame:
     The committed split must assign every customer to exactly one partition.
     Holding the row order fixed keeps validation splits reproducible.
     """
+    return _load_partition("train")
+
+
+def load_test() -> pd.DataFrame:
+    """Return the reserved test rows in dataset order.
+
+    Use this only once, for the final evaluation of the frozen pipelines.
+    """
+    return _load_partition("test")
+
+
+def _load_partition(partition: str) -> pd.DataFrame:
     raw = pd.read_csv(DATA_PATH)
     assignments = pd.read_csv(SPLIT_PATH, usecols=["CustomerID", "split"])
     if raw["CustomerID"].isna().any() or assignments["CustomerID"].isna().any():
@@ -54,8 +66,8 @@ def load_train() -> pd.DataFrame:
     if len(assignments) != len(raw) or set(customers["split"]) != {"train", "test"}:
         raise ValueError("The split file must assign every customer to train or test")
 
-    train = customers.loc[customers["split"] == "train", raw.columns].reset_index(drop=True)
-    return _with_churn_label(train)
+    rows = customers.loc[customers["split"] == partition, raw.columns].reset_index(drop=True)
+    return _with_churn_label(rows)
 
 
 if __name__ == "__main__":
