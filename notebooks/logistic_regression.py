@@ -23,6 +23,7 @@
 import sys
 from pathlib import Path
 
+import matplotlib.pyplot as plt
 import pandas as pd
 from IPython.display import display
 from joblib import parallel_config
@@ -54,6 +55,7 @@ splitter = sk_selection.RepeatedStratifiedKFold(
     n_repeats=2,
     random_state=data.RANDOM_STATE,
 )
+AP_TOLERANCE = 0.002
 
 # %% [markdown]
 # ## Preprocessing options
@@ -186,20 +188,23 @@ chosen_pipeline = sk_pipeline.make_pipeline(chosen_features, model)
 # ## Hyperparameter tuning
 #
 # We keep the preprocessing choice fixed and fit it again on each fold's
-# training rows. We choose the settings with the highest mean validation AP
-# on the same ten folds. Grid search then refits the selected pipeline on the
-# full training partition.
+# training rows. We tune `C` and `class_weight`. Smaller values of `C` apply
+# stronger regularization. Balanced class weights give churners more weight
+# during fitting.
 #
-# We tune `C` and `class_weight`. Smaller values of `C` apply stronger
-# regularization. Balanced class weights give churners more weight during fitting.
+# We use the same ten validation folds. Among settings within 0.002 AP of
+# the best, we prefer no class weights, then the smallest `C`, because
+# stronger regularization gives a simpler model. We use mean AP if both
+# choices match.
 
 # %%
+model_step = chosen_pipeline.steps[-1][0]
 param_grid = {
-    "logisticregression__C": [
+    f"{model_step}__C": [
         0.001, 0.0015, 0.002, 0.003, 0.005, 0.01, 0.03, 0.1, 0.3,
         1.0, 3.0, 10.0, 30.0, 100.0,
     ],
-    "logisticregression__class_weight": [None, "balanced"],
+    f"{model_step}__class_weight": [None, "balanced"],
 }
 
 search = sk_selection.GridSearchCV(
@@ -207,14 +212,12 @@ search = sk_selection.GridSearchCV(
     param_grid=param_grid,
     scoring=SCORING,
     cv=splitter,
-    refit="average_precision",
+    refit=False,
     n_jobs=N_JOBS,
     error_score="raise",
 )
 with parallel_config(backend="loky", inner_max_num_threads=1):
     _ = search.fit(X, y)
-
-tuned_pipeline = search.best_estimator_
 
 # %%
 cv_results = pd.DataFrame(search.cv_results_)
@@ -222,22 +225,42 @@ n_folds = splitter.get_n_splits()
 fold_ap = cv_results[[f"split{i}_test_average_precision" for i in range(n_folds)]]
 tuning = pd.DataFrame(
     {
-        "C": cv_results["param_logisticregression__C"],
-        "Class weight": cv_results["param_logisticregression__class_weight"].fillna("Unweighted"),
+        "C": cv_results[f"param_{model_step}__C"].astype(float),
+        "Class weight": cv_results[f"param_{model_step}__class_weight"].fillna("Unweighted"),
         "AP mean": cv_results["mean_test_average_precision"],
         "AP SD": fold_ap.std(axis=1, ddof=1),
         "ROC AUC mean": cv_results["mean_test_roc_auc"],
     }
 )
+tuning["Near tie"] = tuning["AP mean"] >= tuning["AP mean"].max() - AP_TOLERANCE
+chosen_setting = (
+    tuning.loc[tuning["Near tie"]]
+    .assign(weighted=lambda table: table["Class weight"].ne("Unweighted"))
+    .sort_values(["weighted", "C", "AP mean"], ascending=[True, True, False])
+    .index[0]
+)
+
+tuning["AP difference"] = fold_ap.sub(fold_ap.loc[chosen_setting], axis="columns").mean(axis=1)
 print("Chosen hyperparameters")
-display(tuning.loc[[search.best_index_]].round(5))
+display(tuning.loc[[chosen_setting]].round(5))
 display(tuning.sort_values("AP mean", ascending=False).round(5))
 
 # %% [markdown]
 # ## Tuning decision
 #
-# **We choose `C=0.005` with no class weights.** It reached the highest mean
-# validation AP, 0.39931. The gain over the default was 0.00127 AP.
+# **We choose `C=0.0015` with no class weights.** The best mean AP, 0.39931,
+# came from `C=0.005` without class weights. Every unweighted setting from
+# `C=0.0015` up to the default `C=1` fell within 0.002 AP of it, so we choose
+# the strongest regularization in this range. Its mean AP was 0.39791
+# (SD 0.00722), 0.00140 below the best and 0.00013 below the default, and it
+# led the default on 4 of 10 folds. Tuning makes little difference for logistic
+# regression: validation AP is almost the same for any `C` in this range.
+
+# %%
+tuned_pipeline = sk_base.clone(chosen_pipeline).set_params(
+    **cv_results.loc[chosen_setting, "params"]
+)
+_ = tuned_pipeline.fit(X, y)
 
 # %% [markdown]
 # ## Model evaluation
@@ -249,13 +272,13 @@ display(tuning.sort_values("AP mean", ascending=False).round(5))
 # %%
 metrics = ["AP mean", "AP SD", "ROC AUC mean"]
 comparison = pd.DataFrame(
-    [results.loc[chosen_row, metrics], tuning.loc[search.best_index_, metrics]],
+    [results.loc[chosen_row, metrics], tuning.loc[chosen_setting, metrics]],
     index=["Default", "Tuned"],
 )
 display(comparison.round(5))
 
 # Compare AP on matching folds so each pair uses the same validation rows.
-ap_gain = fold_ap.loc[search.best_index_].to_numpy() - ap_by_option[chosen_row]
+ap_gain = fold_ap.loc[chosen_setting].to_numpy() - ap_by_option[chosen_row]
 print(f"The tuned model leads on {(ap_gain > 0).sum()} of {n_folds} folds by AP.")
 
 # %% [markdown]
@@ -291,4 +314,12 @@ feature_importance = pd.DataFrame(
     }
 ).sort_values("Mean AP drop", ascending=False)
 feature_importance.index.name = "Feature"
-display(feature_importance.head(10).round(5))
+top_features = feature_importance.head(10)
+display(top_features.round(5))
+
+# %%
+ax = top_features["Mean AP drop"].iloc[::-1].plot.barh(figsize=(8, 4), color="#237E80")
+ax.set_xlabel("Mean validation AP drop after shuffling")
+ax.set_ylabel("")
+plt.tight_layout()
+plt.show()

@@ -23,6 +23,7 @@
 import sys
 from pathlib import Path
 
+import matplotlib.pyplot as plt
 import pandas as pd
 from IPython.display import display
 from joblib import parallel_config
@@ -53,6 +54,7 @@ splitter = sk_selection.RepeatedStratifiedKFold(
     n_repeats=2,
     random_state=data.RANDOM_STATE,
 )
+AP_TOLERANCE = 0.002
 
 # %% [markdown]
 # ## Preprocessing options
@@ -181,16 +183,18 @@ chosen_pipeline = sk_pipeline.make_pipeline(chosen_features, model)
 # ## Hyperparameter tuning
 #
 # We keep the preprocessing choice fixed and fit it again on each fold's
-# training rows. We choose the settings with the highest mean validation AP
-# on the same ten folds. Grid search then refits the selected pipeline on the
-# full training partition.
+# training rows. We tune `var_smoothing`, which adds a small amount to the
+# estimated feature variances and reduces the influence of inputs with very
+# small variances.
 #
-# We tune `var_smoothing`, which adds a small amount to the estimated feature
-# variances and reduces the influence of inputs with very small variances.
+# We use the same ten validation folds. Among settings within 0.002 AP of
+# the best, we prefer the largest `var_smoothing`, because more smoothing
+# gives a simpler model.
 
 # %%
+model_step = chosen_pipeline.steps[-1][0]
 param_grid = {
-    "gaussiannb__var_smoothing": [
+    f"{model_step}__var_smoothing": [
         1e-12, 1e-11, 1e-10, 1e-9, 1e-8, 2e-8, 3e-8, 5e-8, 7e-8, 1e-7, 1.5e-7,
         2e-7, 3e-7, 5e-7, 1e-6, 1e-5, 1e-4, 1e-3, 1e-2, 1e-1, 1.0,
     ],
@@ -201,37 +205,49 @@ search = sk_selection.GridSearchCV(
     param_grid=param_grid,
     scoring=SCORING,
     cv=splitter,
-    refit="average_precision",
+    refit=False,
     n_jobs=N_JOBS,
     error_score="raise",
 )
 with parallel_config(backend="loky", inner_max_num_threads=1):
     _ = search.fit(X, y)
 
-tuned_pipeline = search.best_estimator_
-
 # %%
 cv_results = pd.DataFrame(search.cv_results_)
 n_folds = splitter.get_n_splits()
 fold_ap = cv_results[[f"split{i}_test_average_precision" for i in range(n_folds)]]
+smoothing = cv_results[f"param_{model_step}__var_smoothing"].astype(float)
 tuning = pd.DataFrame(
     {
         # Scientific notation keeps the smallest smoothing values visible.
-        "var_smoothing": cv_results["param_gaussiannb__var_smoothing"].map("{:.1e}".format),
+        "var_smoothing": smoothing.map("{:.1e}".format),
         "AP mean": cv_results["mean_test_average_precision"],
         "AP SD": fold_ap.std(axis=1, ddof=1),
         "ROC AUC mean": cv_results["mean_test_roc_auc"],
     }
 )
+tuning["Near tie"] = tuning["AP mean"] >= tuning["AP mean"].max() - AP_TOLERANCE
+chosen_setting = smoothing[tuning["Near tie"]].idxmax()
+
+tuning["AP difference"] = fold_ap.sub(fold_ap.loc[chosen_setting], axis="columns").mean(axis=1)
 print("Chosen hyperparameters")
-display(tuning.loc[[search.best_index_]].round(5))
+display(tuning.loc[[chosen_setting]].round(5))
 display(tuning.sort_values("AP mean", ascending=False).round(5))
 
 # %% [markdown]
 # ## Tuning decision
 #
-# **We choose `var_smoothing=3e-7`.** It reached the highest mean validation
-# AP, 0.36001, and improved AP over the default on all ten folds.
+# **We choose `var_smoothing=5e-7`.** The best mean AP, 0.36001, used `3e-7`.
+# Settings from `7e-8` to `5e-7` fell within 0.002 AP of it, so we choose the
+# largest smoothing in this range. Its mean AP was 0.35869 (SD 0.00751),
+# 0.00132 below the best and 0.00719 above the default of `1e-9`. It led the
+# default on 9 of 10 folds.
+
+# %%
+tuned_pipeline = sk_base.clone(chosen_pipeline).set_params(
+    **cv_results.loc[chosen_setting, "params"]
+)
+_ = tuned_pipeline.fit(X, y)
 
 # %% [markdown]
 # ## Model evaluation
@@ -243,13 +259,13 @@ display(tuning.sort_values("AP mean", ascending=False).round(5))
 # %%
 metrics = ["AP mean", "AP SD", "ROC AUC mean"]
 comparison = pd.DataFrame(
-    [results.loc[chosen_row, metrics], tuning.loc[search.best_index_, metrics]],
+    [results.loc[chosen_row, metrics], tuning.loc[chosen_setting, metrics]],
     index=["Default", "Tuned"],
 )
 display(comparison.round(5))
 
 # Compare AP on matching folds so each pair uses the same validation rows.
-ap_gain = fold_ap.loc[search.best_index_].to_numpy() - ap_by_option[chosen_row]
+ap_gain = fold_ap.loc[chosen_setting].to_numpy() - ap_by_option[chosen_row]
 print(f"The tuned model leads on {(ap_gain > 0).sum()} of {n_folds} folds by AP.")
 
 # %% [markdown]
@@ -285,4 +301,12 @@ feature_importance = pd.DataFrame(
     }
 ).sort_values("Mean AP drop", ascending=False)
 feature_importance.index.name = "Feature"
-display(feature_importance.head(10).round(5))
+top_features = feature_importance.head(10)
+display(top_features.round(5))
+
+# %%
+ax = top_features["Mean AP drop"].iloc[::-1].plot.barh(figsize=(8, 4), color="#237E80")
+ax.set_xlabel("Mean validation AP drop after shuffling")
+ax.set_ylabel("")
+plt.tight_layout()
+plt.show()
