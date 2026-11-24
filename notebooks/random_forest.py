@@ -29,6 +29,7 @@ from IPython.display import display
 from sklearn import base as sk_base
 from sklearn import ensemble as sk_ensemble
 from sklearn import inspection as sk_inspection
+from sklearn import metrics as sk_metrics
 from sklearn import model_selection as sk_selection
 from sklearn import pipeline as sk_pipeline
 
@@ -483,3 +484,68 @@ display(impurity_importance.head(10).round(5).to_frame())
 # Many household and lifestyle flags change AP by less than 0.0005. These
 # results describe what this forest uses to rank customers. They do not show
 # that an input causes churn.
+
+# %% [markdown]
+# ## Test set evaluation
+#
+# We score the tuned forest, fitted on the full training partition, once on
+# the reserved test customers. We fixed every setting above before this step
+# and do not change any of them afterward. We place the test scores next to
+# the mean scores on the ten validation folds. Similar values mean the
+# validation results carry over to new customers.
+
+# %%
+test = data.load_test()
+X_test = preprocessing.prepare_predictors(test)
+y_test = test["churn"]
+test_probability = tuned_pipeline.predict_proba(X_test)[:, 1]
+print(f"{len(y_test):,} test customers, churn rate {y_test.mean():.1%}")
+
+test_outreach = pd.DataFrame(
+    [
+        {
+            "Contact share": share,
+            **evaluation.outreach_scores(y_test, test_probability, share),
+        }
+        for share in CONTACT_SHARES
+    ]
+).set_index("Contact share")
+test_outreach["Savings per 1,000 customers"] = evaluation.savings_per_1000(
+    test_outreach, cost_matrix
+)
+validation_outreach = (
+    outreach.loc[outreach["Model"].eq("Tuned forest")]
+    .groupby("Contact share")
+    .mean(numeric_only=True)
+)
+
+scores = {
+    "AP": (
+        tuning.loc[chosen_setting, "AP mean"],
+        sk_metrics.average_precision_score(y_test, test_probability),
+    ),
+    "ROC AUC": (
+        tuning.loc[chosen_setting, "ROC AUC mean"],
+        sk_metrics.roc_auc_score(y_test, test_probability),
+    ),
+}
+for share in CONTACT_SHARES:
+    for metric in ["Precision", "Recall", "Savings per 1,000 customers"]:
+        scores[f"{metric}, top {share:.0%}"] = (
+            validation_outreach.loc[share, metric],
+            test_outreach.loc[share, metric],
+        )
+
+test_comparison = pd.DataFrame(scores, index=["Validation", "Test"]).T
+test_comparison["Test − validation"] = test_comparison["Test"] - test_comparison["Validation"]
+display(test_comparison.round(4))
+
+# %%
+test_confusion = pd.crosstab(
+    y_test.map({1: "Churned", 0: "Stayed"}).rename("Actual"),
+    pd.Series(evaluation.contact_top(test_probability, EVALUATION_SHARE), index=y_test.index)
+    .map({True: "Contacted", False: "Not contacted"})
+    .rename("Outreach"),
+)
+print(f"Tuned forest, top {EVALUATION_SHARE:.0%} of test customers")
+display(test_confusion)
