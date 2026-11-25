@@ -19,9 +19,11 @@ def outreach_scores(y_true, churn_probability, share: float) -> dict:
     contacted = contact_top(churn_probability, share)
     churners_contacted = int((contacted & churned).sum())
     precision = churners_contacted / contacted.sum()
+    recall = churners_contacted / churned.sum()
     return {
         "Precision": precision,
-        "Recall": churners_contacted / churned.sum(),
+        "Recall": recall,
+        "F1": 2 * precision * recall / (precision + recall) if churners_contacted else 0.0,
         "Lift": precision / churned.mean(),
         "Churners contacted": churners_contacted,
         "Stayers contacted": int((contacted & ~churned).sum()),
