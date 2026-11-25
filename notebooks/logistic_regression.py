@@ -256,6 +256,43 @@ display(tuning.sort_values("AP mean", ascending=False).round(5))
 # led the default on 4 of 10 folds. Tuning makes little difference for logistic
 # regression: validation AP is almost the same for any `C` in this range.
 
+# %% [markdown]
+# ### Tolerance check
+#
+# Our near-tie tolerance of 0.002 AP is about the size of random fold-to-fold
+# variation in mean AP. A choice should not depend on this exact cut-off, so we
+# repeat the same selection rule with tolerances of 0.001 and 0.003.
+
+# %%
+tolerance_rows = []
+for tolerance in [0.001, 0.002, 0.003]:
+    within_tolerance = tuning["AP mean"] >= tuning["AP mean"].max() - tolerance
+    setting = (
+        tuning.loc[within_tolerance]
+        .assign(weighted=lambda table: table["Class weight"].ne("Unweighted"))
+        .sort_values(["weighted", "C", "AP mean"], ascending=[True, True, False])
+        .index[0]
+    )
+    tolerance_rows.append(
+        {
+            "Tolerance": tolerance,
+            "C": tuning.loc[setting, "C"],
+            "Class weight": tuning.loc[setting, "Class weight"],
+            "AP mean": tuning.loc[setting, "AP mean"],
+            "AP difference": tuning.loc[setting, "AP difference"],
+        }
+    )
+print(f"Chosen setting by tolerance, AP difference to the {AP_TOLERANCE} choice")
+display(pd.DataFrame(tolerance_rows).round(5))
+
+# %% [markdown]
+# **The chosen `C` changes with the tolerance, but mean AP stays within 0.00125
+# of our choice.** At 0.001 the rule picks `C=0.002` with mean AP 0.39855,
+# 0.00064 higher. At 0.003 it picks `C=0.001`, the smallest value in our grid,
+# with mean AP 0.39666, 0.00125 lower. All three choices are unweighted and
+# strongly regularized, which agrees with our finding that `C` barely changes
+# validation AP.
+
 # %%
 tuned_pipeline = sk_base.clone(chosen_pipeline).set_params(
     **cv_results.loc[chosen_setting, "params"]

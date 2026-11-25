@@ -243,6 +243,35 @@ display(tuning.sort_values("AP mean", ascending=False).round(5))
 # 0.00132 below the best and 0.00719 above the default of `1e-9`. It led the
 # default on 9 of 10 folds.
 
+# %% [markdown]
+# ### Tolerance check
+#
+# Our near-tie tolerance of 0.002 AP is about the size of random fold-to-fold
+# variation in mean AP. A choice should not depend on this exact cut-off, so we
+# repeat the same selection rule with tolerances of 0.001 and 0.003.
+
+# %%
+tolerance_rows = []
+for tolerance in [0.001, 0.002, 0.003]:
+    within_tolerance = tuning["AP mean"] >= tuning["AP mean"].max() - tolerance
+    setting = smoothing[within_tolerance].idxmax()
+    tolerance_rows.append(
+        {
+            "Tolerance": tolerance,
+            "var_smoothing": tuning.loc[setting, "var_smoothing"],
+            "AP mean": tuning.loc[setting, "AP mean"],
+            "AP difference": tuning.loc[setting, "AP difference"],
+        }
+    )
+print(f"Chosen setting by tolerance, AP difference to the {AP_TOLERANCE} choice")
+display(pd.DataFrame(tolerance_rows).round(5))
+
+# %% [markdown]
+# **The choice stays at `var_smoothing=5e-7` with a tolerance of 0.003 and
+# moves to the best setting, `3e-7`, at 0.001.** Our choice is 0.00132 below
+# the best, so a tolerance of 0.001 excludes it. The `3e-7` setting has mean AP
+# 0.36001, 0.00132 higher. Both values sit next to each other in our grid.
+
 # %%
 tuned_pipeline = sk_base.clone(chosen_pipeline).set_params(
     **cv_results.loc[chosen_setting, "params"]
