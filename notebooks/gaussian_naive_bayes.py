@@ -29,6 +29,7 @@ from IPython.display import display
 from joblib import parallel_config
 from sklearn import base as sk_base
 from sklearn import inspection as sk_inspection
+from sklearn import metrics as sk_metrics
 from sklearn import model_selection as sk_selection
 from sklearn import naive_bayes as sk_naive_bayes
 from sklearn import pipeline as sk_pipeline
@@ -241,7 +242,10 @@ display(tuning.sort_values("AP mean", ascending=False).round(5))
 # Settings from `7e-8` to `5e-7` fell within 0.002 AP of it, so we choose the
 # largest smoothing in this range. Its mean AP was 0.35869 (SD 0.00751),
 # 0.00132 below the best and 0.00719 above the default of `1e-9`. It led the
-# default on 9 of 10 folds.
+# default on 9 of 10 folds. Naive Bayes has few parameters, a mean and a
+# variance per input and class, so it cannot fit the noise in the training
+# folds the way an unrestricted tree can. This is why tuning raises AP only a
+# little, by 0.00719 over the default.
 
 # %% [markdown]
 # ### Tolerance check
@@ -282,8 +286,9 @@ _ = tuned_pipeline.fit(X, y)
 # ## Model evaluation
 #
 # We compare the default and tuned models with the chosen preprocessing on
-# the same ten validation folds used for tuning. See [Model comparison](model_comparison.py)
-# for the final test evaluation plan.
+# the same ten validation folds used for tuning. We evaluate the tuned model on
+# the test set at the end of this notebook. See [Model comparison](model_comparison.py)
+# for how we compare all models on the test set.
 
 # %%
 metrics = ["AP mean", "AP SD", "ROC AUC mean"]
@@ -467,3 +472,80 @@ ax.set_xlabel("Mean validation AP drop after shuffling")
 ax.set_ylabel("")
 plt.tight_layout()
 plt.show()
+
+# %% [markdown]
+# ## What the importance shows
+#
+# `MonthlyMinutes` and `PercChangeRevenues` rank highest. Shuffling them lowers
+# AP by 0.00912 and 0.00780 on average. Each of the top 10 inputs lowers AP on
+# all five folds when shuffled, but every mean drop is below 0.01. Random
+# forest and gradient boosting rank `MonthlyMinutes`, `PercChangeMinutes`,
+# `CurrentEquipmentDays` and `MonthsInService` highest. All four are in our top
+# 10, ranked first, sixth, fourth and seventh. `HandsetWebCapable` ranks third
+# with 0.00410. These results describe what this model uses to rank customers.
+# They do not show that an input causes churn.
+
+# %% [markdown]
+# ## Test set evaluation
+#
+# We score the tuned naive Bayes model, fitted on the full training partition,
+# once on the reserved test customers. We fixed every setting above before this
+# step and do not change any of them afterward. We place the test scores next
+# to the mean scores on the ten validation folds. Similar values mean the
+# validation results carry over to new customers.
+
+# %%
+test = data.load_test()
+X_test = preprocessing.prepare_predictors(test)
+y_test = test["churn"]
+test_probability = tuned_pipeline.predict_proba(X_test)[:, 1]
+print(f"{len(y_test):,} test customers, churn rate {y_test.mean():.1%}")
+
+test_outreach = pd.DataFrame(
+    [
+        {
+            "Contact share": share,
+            **evaluation.outreach_scores(y_test, test_probability, share),
+        }
+        for share in CONTACT_SHARES
+    ]
+).set_index("Contact share")
+test_outreach["Savings per 1,000 customers"] = evaluation.savings_per_1000(
+    test_outreach, cost_matrix
+)
+validation_outreach = (
+    outreach.loc[outreach["Model"].eq(tuned_name)]
+    .groupby("Contact share")
+    .mean(numeric_only=True)
+)
+
+scores = {
+    "AP": (
+        tuning.loc[chosen_setting, "AP mean"],
+        sk_metrics.average_precision_score(y_test, test_probability),
+    ),
+    "ROC AUC": (
+        tuning.loc[chosen_setting, "ROC AUC mean"],
+        sk_metrics.roc_auc_score(y_test, test_probability),
+    ),
+}
+for share in CONTACT_SHARES:
+    for metric in ["Precision", "Recall", "Savings per 1,000 customers"]:
+        scores[f"{metric}, top {share:.0%}"] = (
+            validation_outreach.loc[share, metric],
+            test_outreach.loc[share, metric],
+        )
+
+test_comparison = pd.DataFrame(scores, index=["Validation", "Test"]).T
+test_comparison["Test − validation"] = test_comparison["Test"] - test_comparison["Validation"]
+display(test_comparison.round(4))
+
+# %%
+test_confusion = pd.crosstab(
+    y_test.map({1: "Churned", 0: "Stayed"}).rename("Actual"),
+    pd.Series(evaluation.contact_top(test_probability, EVALUATION_SHARE), index=y_test.index)
+    .map({True: "Contacted", False: "Not contacted"})
+    .rename("Outreach"),
+)
+print(f"{tuned_name}, top {EVALUATION_SHARE:.0%} of test customers")
+display(test_confusion)
