@@ -243,7 +243,7 @@ display(tuning.sort_values("AP mean", ascending=False).round(5))
 # largest smoothing in this range. Its mean AP was 0.35869 (SD 0.00751),
 # 0.00132 below the best and 0.00719 above the default of `1e-9`. It led the
 # default on 9 of 10 folds. Naive Bayes has few parameters, a mean and a
-# variance per input and class, so it cannot fit the noise in the training
+# variance per feature column and class, so it cannot fit the noise in the training
 # folds the way an unrestricted tree can. This is why tuning raises AP only a
 # little, by 0.00719 over the default.
 

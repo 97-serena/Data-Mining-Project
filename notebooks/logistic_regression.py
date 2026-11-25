@@ -256,7 +256,7 @@ display(tuning.sort_values("AP mean", ascending=False).round(5))
 # (SD 0.00722), 0.00140 below the best and 0.00013 below the default, and it
 # led the default on 4 of 10 folds. Tuning makes little difference for logistic
 # regression: validation AP is almost the same for any `C` in this range.
-# Logistic regression has few parameters, one weight per input column, so it
+# Logistic regression has few parameters, one weight per feature column, so it
 # cannot fit the noise in the training folds the way an unrestricted tree can.
 # This is why stronger regularization changes validation AP so little.
 
