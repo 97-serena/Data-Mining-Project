@@ -51,7 +51,8 @@ splitter = sk_selection.RepeatedStratifiedKFold(
     random_state=data.RANDOM_STATE,
 )
 AP_TOLERANCE = 0.002
-N_JOBS = 4
+# Use every core. Forest results do not depend on the number of cores.
+N_JOBS = -1
 
 # %% [markdown]
 # ## Preprocessing options
@@ -249,6 +250,43 @@ display(
 # 0.00260) and led on 8 of 10 folds. This is inside our 0.002 near-tie range,
 # so we keep the larger leaves and fewer inputs per split. Four settings fall
 # in this range and their ROC AUC values differ by at most 0.0004.
+
+# %% [markdown]
+# ### Tolerance check
+#
+# Our near-tie tolerance of 0.002 AP is about the size of random fold-to-fold
+# variation in mean AP. A choice should not depend on this exact cut-off, so we
+# repeat the same selection rule with tolerances of 0.001 and 0.003.
+
+# %%
+tolerance_rows = []
+for tolerance in [0.001, 0.002, 0.003]:
+    within_tolerance = tuning["AP mean"] >= tuning["AP mean"].max() - tolerance
+    setting = (
+        tuning.loc[within_tolerance]
+        .assign(features_rank=lambda table: table["max_features"].map(features_rank))
+        .sort_values(["min_samples_leaf", "features_rank"], ascending=[False, True])
+        .index[0]
+    )
+    tolerance_rows.append(
+        {
+            "Tolerance": tolerance,
+            "max_features": tuning.loc[setting, "max_features"],
+            "min_samples_leaf": tuning.loc[setting, "min_samples_leaf"],
+            "AP mean": tuning.loc[setting, "AP mean"],
+            "AP difference": tuning.loc[setting, "AP difference"],
+        }
+    )
+print(f"Chosen setting by tolerance, AP difference to the {AP_TOLERANCE} choice")
+display(pd.DataFrame(tolerance_rows).round(5))
+
+# %% [markdown]
+# **Our choice holds at 0.003 but not at 0.001, and mean AP changes by at most
+# 0.00179.** At 0.001 only the top setting, `max_features=0.33` with leaves of
+# 10, is close enough to the best, so the rule picks it. Its mean AP is 0.00179
+# higher (paired SD 0.00260) and it led on 8 of 10 folds. At 0.003 the rule
+# keeps `max_features=0.2` with leaves of 20. The gap at 0.001 is smaller than
+# its paired SD, so we keep the 0.002 tolerance and our current settings.
 
 # %%
 tuned_pipeline = sk_base.clone(chosen_pipeline).set_params(
