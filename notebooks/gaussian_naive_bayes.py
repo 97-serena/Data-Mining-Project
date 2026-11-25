@@ -549,3 +549,14 @@ test_confusion = pd.crosstab(
 )
 print(f"{tuned_name}, top {EVALUATION_SHARE:.0%} of test customers")
 display(test_confusion)
+
+# %% [markdown]
+# ## Test results
+#
+# **On the 10,210 test customers, the tuned naive Bayes model reaches AP 0.3612
+# and ROC AUC 0.5913, compared with 0.3587 and 0.5843 on the validation
+# folds.** Contacting the top 5% gives 46.7% precision and 8.1% recall, the top
+# 10% gives 41.8% and 14.5%, and the top 20% gives 37.5% and 26.0%. In the top
+# 10%, we contact 427 churners and 594 customers who stayed, and 2,515 churners
+# are not contacted. Test AP is 0.0025 above validation, well within the
+# validation fold SD of 0.00751, so the gap is small.

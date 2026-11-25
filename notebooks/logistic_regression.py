@@ -571,3 +571,15 @@ test_confusion = pd.crosstab(
 )
 print(f"{tuned_name}, top {EVALUATION_SHARE:.0%} of test customers")
 display(test_confusion)
+
+# %% [markdown]
+# ## Test results
+#
+# **On the 10,210 test customers, the tuned logistic regression model reaches
+# AP 0.3919 and ROC AUC 0.6218, compared with 0.3979 and 0.6262 on the
+# validation folds.** Contacting the top 5% gives 49.6% precision and 8.6%
+# recall, the top 10% gives 45.2% and 15.7%, and the top 20% gives 41.3% and
+# 28.7%. In the top 10%, we contact 461 churners and 560 customers who stayed,
+# and 2,481 churners are not contacted. Test AP is 0.0060 below validation,
+# less than the validation fold SD of 0.00722, so the gap is small, although
+# precision in the top 10% falls from 46.9% to 45.2%.
