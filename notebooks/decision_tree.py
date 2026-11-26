@@ -24,11 +24,13 @@ import sys
 from pathlib import Path
 
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
 from IPython.display import display
 from joblib import parallel_config
 from sklearn import base as sk_base
 from sklearn import inspection as sk_inspection
+from sklearn import metrics as sk_metrics
 from sklearn import model_selection as sk_selection
 from sklearn import pipeline as sk_pipeline
 from sklearn import preprocessing as sk_preprocessing
@@ -64,13 +66,6 @@ AP_TOLERANCE = 0.002
 # rates, frequency encoding measures how common each area is, and one-hot
 # encoding creates a 0/1 column per area. We compare filling missing numeric values
 # with the training median or with zero.
-#
-# Data exploration found 730 service-area levels including the missing marker.
-# Many have fewer than 20 training customers. Frequency and target encoding
-# each represent area with one column.
-# All options use the same predictors, with mode imputation for yes/no inputs
-# and one-hot encoding for the other categorical inputs. Numeric and yes/no
-# imputation retain missingness indicators, and we keep numeric values unscaled.
 #
 # We fix the seed for repeatable results and use the other estimator defaults.
 
@@ -179,8 +174,8 @@ chosen_pipeline = sk_pipeline.make_pipeline(chosen_features, model)
 # Hyperparameters are settings we choose before fitting. We tune `max_depth`
 # to limit the depth of the tree, `min_samples_leaf` to set the minimum number
 # of training customers per leaf, and `class_weight` to compare unweighted
-# and balanced training. The depth grid extends to 15 so that the best depth
-# does not sit at the edge of the grid.
+# and balanced training. The depth grid extends to 15 to compare deeper trees
+# with depth 10.
 #
 # We use the same ten validation folds. Among settings within 0.002 AP of
 # the best, we prefer a shallower tree, then larger leaves, then no class
@@ -246,6 +241,44 @@ display(tuning.sort_values("AP mean", ascending=False).head(15).round(5))
 # improve on depth 10 by more than our tolerance. The tuned tree beat the
 # default tree's 0.31145 AP on all 10 folds.
 
+# %% [markdown]
+# ### Tolerance check
+#
+# We apply the same selection rule at 0.001, 0.002 and 0.003 AP using the
+# existing grid scores. AP differences are relative to the choice at 0.002,
+# which remains the tolerance used to select the tuned tree.
+
+# %%
+tolerance_rows = []
+for tolerance in [0.001, AP_TOLERANCE, 0.003]:
+    within_tolerance = tuning["AP mean"] >= tuning["AP mean"].max() - tolerance
+    setting = (
+        tuning.loc[within_tolerance]
+        .assign(weighted=lambda table: table["Class weight"].ne("Unweighted"))
+        .sort_values(
+            ["Max depth", "Min samples per leaf", "weighted", "AP mean"],
+            ascending=[True, False, True, False],
+        )
+        .index[0]
+    )
+    tolerance_rows.append(
+        {
+            "Tolerance": tolerance,
+            "Max depth": tuning.loc[setting, "Max depth"],
+            "Min samples per leaf": tuning.loc[setting, "Min samples per leaf"],
+            "Class weight": tuning.loc[setting, "Class weight"],
+            "AP mean": tuning.loc[setting, "AP mean"],
+            "AP difference": tuning.loc[setting, "AP difference"],
+        }
+    )
+print(f"Chosen setting by tolerance, AP difference to the {AP_TOLERANCE} choice")
+display(pd.DataFrame(tolerance_rows).round(5))
+
+# %% [markdown]
+# All three tolerances select the same unweighted tree with depth 10 and at
+# least 250 customers per leaf. Its mean validation AP is 0.39984, about
+# 0.00086 below the best mean AP in the grid.
+
 # %%
 tuned_pipeline = sk_base.clone(chosen_pipeline).set_params(
     **cv_results.loc[chosen_setting, "params"]
@@ -256,8 +289,8 @@ _ = tuned_pipeline.fit(X, y)
 # ## Model evaluation
 #
 # We compare the default and tuned trees with the chosen preprocessing on
-# the same ten validation folds used for tuning. See [Model comparison](model_comparison.py)
-# for the final test evaluation plan.
+# the same ten validation folds used for tuning. The test section at the end
+# evaluates this tree separately from the [model comparison](model_comparison.py).
 
 # %%
 metrics = ["AP mean", "AP SD", "ROC AUC mean"]
@@ -277,12 +310,13 @@ print(f"The tuned model leads on {(ap_gain > 0).sum()} of {n_folds} folds by AP.
 # AP and ROC AUC do not need a cut-off. To describe a retention campaign, we
 # rank each validation fold by predicted churn probability and contact the top
 # 10% of customers. We also show 5% and 20% to see how results change with the
-# budget. Precision is the share of contacted customers who churn, recall is
-# the share of all churners we contact, and lift is precision divided by the
-# fold's churn rate. Random contact gives a lift of 1.
+# budget. Precision is the share of contacted customers who churn, and recall
+# is the share of all churners we contact. F1 combines precision and recall
+# through their harmonic mean. Lift is precision divided by the fold's churn
+# rate. Random contact gives a lift of 1.
 #
-# We refit the default and tuned models on the same ten training folds. The
-# test set stays unused.
+# We refit the default and tuned models on the same ten training folds. This
+# analysis uses only the validation rows from those splits.
 
 # %%
 CONTACT_SHARES = [0.05, 0.10, 0.20]
@@ -291,6 +325,7 @@ EVALUATION_SHARE = 0.10
 default_name, tuned_name = comparison.index
 pipelines = {default_name: chosen_pipeline, tuned_name: tuned_pipeline}
 outreach_rows = []
+tuned_fold_scores = []
 # Each customer appears once in the validation folds of the first repeat
 contacted_first_repeat = pd.Series(False, index=X.index)
 
@@ -308,14 +343,16 @@ for fold, (fit_rows, valid_rows) in enumerate(splitter.split(X, y)):
                     **evaluation.outreach_scores(y_valid, churn_probability, share),
                 }
             )
-        if name == tuned_name and fold < N_SPLITS:
-            contacted_first_repeat.iloc[valid_rows] = evaluation.contact_top(
-                churn_probability, EVALUATION_SHARE
-            )
+        if name == tuned_name:
+            tuned_fold_scores.append((y_valid, churn_probability))
+            if fold < N_SPLITS:
+                contacted_first_repeat.iloc[valid_rows] = evaluation.contact_top(
+                    churn_probability, EVALUATION_SHARE
+                )
 
 outreach = pd.DataFrame(outreach_rows)
 display(
-    outreach.groupby(["Contact share", "Model"])[["Precision", "Recall", "Lift"]]
+    outreach.groupby(["Contact share", "Model"])[["Precision", "Recall", "F1", "Lift"]]
     .agg(["mean", "std"])
     .round(4)
 )
@@ -340,8 +377,9 @@ display(confusion)
 #
 # **Contacting the top 10%, 46.7% of contacted customers churn with the tuned
 # tree (SD 1.6 points), compared with 28.8% for random contact (lift 1.62).**
-# This reaches 16.2% of all churners. The default tree reached only 34.3%, and
-# the tuned tree had higher precision on all 10 folds at every budget. A smaller
+# This reaches 16.2% of all churners. The default tree's precision was 34.3%.
+# Mean F1 at this budget rose from 0.177 to 0.241 after tuning. The tuned tree
+# had higher precision on all 10 folds at every budget. A smaller
 # budget raises precision but reaches fewer churners: 50.6% precision and 8.8%
 # recall at 5%, and 42.5% and 29.5% at 20%.
 #
@@ -351,8 +389,52 @@ display(confusion)
 # group without ranking them.
 #
 # In the first repeat, the top 10% contained 1,890 churners and 2,195 customers
-# who stayed. The other 9,879 churners were not contacted. The team still has
-# to agree on the contact budget before the final test evaluation.
+# who stayed. The other 9,879 churners were not contacted.
+
+# %% [markdown]
+# ## The threshold that maximizes F1
+#
+# On each validation fold we use the tuned tree's existing predictions to
+# find the score threshold that gives the highest F1. We flag customers at
+# or above that threshold. If thresholds tie, we choose the highest one
+# to keep the contact list shorter. Finding and evaluating the threshold on
+# the same fold makes this an exploratory comparison of contact list sizes.
+
+# %%
+f1_rows = []
+for y_valid, churn_probability in tuned_fold_scores:
+    precision, recall, thresholds = sk_metrics.precision_recall_curve(
+        y_valid, churn_probability
+    )
+    # The final precision and recall pair has no corresponding threshold.
+    precision, recall = precision[:-1], recall[:-1]
+    f1 = np.divide(
+        2 * precision * recall,
+        precision + recall,
+        out=np.zeros_like(precision),
+        where=(precision + recall) > 0,
+    )
+    best = len(thresholds) - 1 - f1[::-1].argmax()
+    threshold = thresholds[best]
+    f1_rows.append(
+        {
+            "Threshold": threshold,
+            "Share flagged": (churn_probability >= threshold).mean(),
+            "Precision": precision[best],
+            "Recall": recall[best],
+            "F1": f1[best],
+        }
+    )
+
+f1_threshold_results = pd.DataFrame(f1_rows)
+print("Tuned tree at the F1-maximizing threshold, ten validation folds")
+display(f1_threshold_results.agg(["mean", "std"]).round(4))
+
+# %% [markdown]
+# The F1-maximizing thresholds flag 69.2% of customers on average (SD 6.0
+# percentage points). Mean F1 is 0.4841, with 34.4% precision and 82.3%
+# recall. This would require about seven times the contact capacity of the
+# top-10% policy, whose mean F1 is 0.2408.
 
 # %% [markdown]
 # ## Cost of outreach
@@ -466,3 +548,98 @@ impurity_importance = pd.Series(
 ).sort_values(ascending=False)
 impurity_importance.index.name = "Feature"
 display(impurity_importance.head(10).round(5).to_frame())
+
+# %% [markdown]
+# ## What the importance measures show
+#
+# Both measures rank `CurrentEquipmentDays` and `MonthsInService` first and
+# second. Shuffling them lowers validation AP by 0.05835 and 0.04301 on
+# average, respectively. `MonthlyMinutes` and `PercChangeMinutes` also rank in
+# the top four by both measures. Shuffling any of these four inputs lowers AP
+# on all five folds in the first repeat.
+#
+# The measures can give different impressions of an input. `HandsetWebCapable`
+# accounts for 1.73% of the fitted tree's impurity reduction, but shuffling it
+# lowers validation AP by just 0.00064 on average. Permutation measures changes
+# in validation ranking, while impurity measures split credit in the fitted
+# tree. Correlated inputs may substitute for one another, and the tree can
+# split credit for a category across multiple encoded columns. These results
+# describe model behavior and cannot establish what causes churn.
+
+# %% [markdown]
+# ## Test set evaluation
+#
+# We score the tuned tree, fitted on the full training partition, on the
+# reserved test customers. Validation determines the model settings. We
+# apply the same contact shares and cost assumptions on the test set and
+# compare its scores with the means across the ten validation folds.
+
+# %%
+test = data.load_test()
+X_test = preprocessing.prepare_predictors(test)
+y_test = test["churn"]
+test_probability = tuned_pipeline.predict_proba(X_test)[:, 1]
+print(f"{len(y_test):,} test customers, churn rate {y_test.mean():.1%}")
+
+test_outreach = pd.DataFrame(
+    [
+        {
+            "Contact share": share,
+            **evaluation.outreach_scores(y_test, test_probability, share),
+        }
+        for share in CONTACT_SHARES
+    ]
+).set_index("Contact share")
+test_outreach["Savings per 1,000 customers"] = evaluation.savings_per_1000(
+    test_outreach, cost_matrix
+)
+validation_outreach = (
+    outreach.loc[outreach["Model"].eq(tuned_name)]
+    .groupby("Contact share")
+    .mean(numeric_only=True)
+)
+
+test_scores = {
+    "AP": (
+        tuning.loc[chosen_setting, "AP mean"],
+        sk_metrics.average_precision_score(y_test, test_probability),
+    ),
+    "ROC AUC": (
+        tuning.loc[chosen_setting, "ROC AUC mean"],
+        sk_metrics.roc_auc_score(y_test, test_probability),
+    ),
+}
+for share in CONTACT_SHARES:
+    for metric in ["Precision", "Recall", "F1", "Lift", "Savings per 1,000 customers"]:
+        test_scores[f"{metric}, top {share:.0%}"] = (
+            validation_outreach.loc[share, metric],
+            test_outreach.loc[share, metric],
+        )
+
+test_comparison = pd.DataFrame(test_scores, index=["Validation", "Test"]).T
+test_comparison["Test − validation"] = test_comparison["Test"] - test_comparison["Validation"]
+display(test_comparison.round(4))
+
+# %%
+test_confusion = pd.crosstab(
+    y_test.map({1: "Churned", 0: "Stayed"}).rename("Actual"),
+    pd.Series(evaluation.contact_top(test_probability, EVALUATION_SHARE), index=y_test.index)
+    .map({True: "Contacted", False: "Not contacted"})
+    .rename("Outreach"),
+)
+print(f"{tuned_name}, top {EVALUATION_SHARE:.0%} of test customers")
+display(test_confusion)
+
+# %% [markdown]
+# ## Test set results
+#
+# On 10,210 test customers, the tuned tree reaches AP 0.4038 and ROC AUC
+# 0.6335. Compared with the validation means of 0.3998 and 0.6392, test AP is
+# higher by 0.0040 and test ROC AUC is lower by 0.0056.
+#
+# At the 10% contact budget, test precision is 49.9%, recall is 17.3% and
+# F1 is 0.2569, compared with 46.7%, 16.2% and 0.2408 on validation. The
+# list contains 509 churners and 512 customers who stayed, and 2,433
+# churners are missed. Under the stated cost assumptions, the test list
+# saves about $3,799 per 1,000 customers compared with no outreach. Test
+# precision is 53.9% at the 5% budget and 42.8% at the 20% budget.
