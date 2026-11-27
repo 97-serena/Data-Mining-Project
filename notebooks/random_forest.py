@@ -24,6 +24,7 @@ import sys
 from pathlib import Path
 
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
 from IPython.display import display
 from sklearn import base as sk_base
@@ -51,7 +52,8 @@ splitter = sk_selection.RepeatedStratifiedKFold(
     random_state=data.RANDOM_STATE,
 )
 AP_TOLERANCE = 0.002
-N_JOBS = 4
+# Use every core. Forest results do not depend on the number of cores.
+N_JOBS = -1
 
 # %% [markdown]
 # ## Preprocessing options
@@ -128,11 +130,12 @@ results = pd.DataFrame(
 # ## Preprocessing decision
 #
 # **We choose frequency encoding and median imputation.** Mean AP was
-# 0.42686 (SD 0.00589). The top mean, with target encoding and median,
-# was higher by 0.00053 AP (paired SD 0.00616) and led on 7 folds. With
-# frequency fixed, zero led on 6 folds and improved mean AP by 0.00022
-# (paired SD 0.00511). Both mean gaps fall well within our near-tie range.
-# We keep area counts and fill numeric blanks with typical observed values.
+# 0.42856 (SD 0.00669), the highest of the four options. The next best,
+# target encoding with zero fill, was 0.00153 AP lower (paired SD 0.00691)
+# and led on 3 of 10 folds. With frequency fixed, zero fill was 0.00214 lower
+# and led on 2 folds. These gaps are small compared with the fold-to-fold
+# variation. Our choice also needs only area counts and fills numeric blanks
+# with typical observed values.
 #
 # On each fold we subtract our choice's AP from the alternative's AP. We show
 # the mean and SD of those differences and count the folds where the alternative led.
@@ -250,6 +253,43 @@ display(
 # so we keep the larger leaves and fewer inputs per split. Four settings fall
 # in this range and their ROC AUC values differ by at most 0.0004.
 
+# %% [markdown]
+# ### Tolerance check
+#
+# Our near-tie tolerance of 0.002 AP is about the size of random fold-to-fold
+# variation in mean AP. A choice should not depend on this exact cut-off, so we
+# repeat the same selection rule with tolerances of 0.001 and 0.003.
+
+# %%
+tolerance_rows = []
+for tolerance in [0.001, 0.002, 0.003]:
+    within_tolerance = tuning["AP mean"] >= tuning["AP mean"].max() - tolerance
+    setting = (
+        tuning.loc[within_tolerance]
+        .assign(features_rank=lambda table: table["max_features"].map(features_rank))
+        .sort_values(["min_samples_leaf", "features_rank"], ascending=[False, True])
+        .index[0]
+    )
+    tolerance_rows.append(
+        {
+            "Tolerance": tolerance,
+            "max_features": tuning.loc[setting, "max_features"],
+            "min_samples_leaf": tuning.loc[setting, "min_samples_leaf"],
+            "AP mean": tuning.loc[setting, "AP mean"],
+            "AP difference": tuning.loc[setting, "AP difference"],
+        }
+    )
+print(f"Chosen setting by tolerance, AP difference to the {AP_TOLERANCE} choice")
+display(pd.DataFrame(tolerance_rows).round(5))
+
+# %% [markdown]
+# **Our choice holds at 0.003 but not at 0.001, and mean AP changes by at most
+# 0.00179.** At 0.001 only the top setting, `max_features=0.33` with leaves of
+# 10, is close enough to the best, so the rule picks it. Its mean AP is 0.00179
+# higher (paired SD 0.00260) and it led on 8 of 10 folds. At 0.003 the rule
+# keeps `max_features=0.2` with leaves of 20. The gap at 0.001 is smaller than
+# its paired SD, so we keep the 0.002 tolerance and our current settings.
+
 # %%
 tuned_pipeline = sk_base.clone(chosen_pipeline).set_params(
     **cv_results.loc[chosen_setting, "params"]
@@ -280,8 +320,9 @@ print(f"The tuned model leads on {(ap_gain > 0).sum()} of {n_folds} folds by AP.
 # rank each validation fold by predicted churn probability and contact the top
 # 10% of customers. We also show 5% and 20% to see how results change with the
 # budget. Precision is the share of contacted customers who churn, recall is
-# the share of all churners we contact, and lift is precision divided by the
-# fold's churn rate. Random contact gives a lift of 1.
+# the share of all churners we contact, F1 combines precision and recall, and
+# lift is precision divided by the fold's churn rate. Random contact gives a
+# lift of 1.
 #
 # We refit the default and tuned forests on the same ten training folds. The
 # test set stays unused.
@@ -294,6 +335,8 @@ pipelines = {"Default forest": chosen_pipeline, "Tuned forest": tuned_pipeline}
 outreach_rows = []
 # Each customer appears once in the validation folds of the first repeat
 contacted_first_repeat = pd.Series(False, index=X.index)
+# Keep the tuned forest's validation scores for the F1 threshold check below
+tuned_fold_scores = []
 
 for fold, (fit_rows, valid_rows) in enumerate(splitter.split(X, y)):
     y_valid = y.iloc[valid_rows]
@@ -309,6 +352,8 @@ for fold, (fit_rows, valid_rows) in enumerate(splitter.split(X, y)):
                     **evaluation.outreach_scores(y_valid, churn_probability, share),
                 }
             )
+        if name == "Tuned forest":
+            tuned_fold_scores.append((y_valid, churn_probability))
         if name == "Tuned forest" and fold < N_SPLITS:
             contacted_first_repeat.iloc[valid_rows] = evaluation.contact_top(
                 churn_probability, EVALUATION_SHARE
@@ -316,7 +361,7 @@ for fold, (fit_rows, valid_rows) in enumerate(splitter.split(X, y)):
 
 outreach = pd.DataFrame(outreach_rows)
 display(
-    outreach.groupby(["Contact share", "Model"])[["Precision", "Recall", "Lift"]]
+    outreach.groupby(["Contact share", "Model"])[["Precision", "Recall", "F1", "Lift"]]
     .agg(["mean", "std"])
     .round(4)
 )
@@ -349,6 +394,49 @@ display(confusion)
 # In the first repeat, the top 10% contained 2,162 churners and 1,923 customers
 # who stayed. The other 9,607 churners were not contacted. The team still has
 # to agree on the contact budget before the final test evaluation.
+
+# %% [markdown]
+# ## The threshold that maximizes F1
+#
+# A common alternative to a fixed budget flags every customer whose churn
+# probability is above the threshold with the highest F1. On each validation
+# fold, we find this threshold for the tuned forest and record how many
+# customers it flags. Choosing the threshold on the same fold makes F1 look
+# slightly better than it would on new customers, so we use it only to show
+# how long the contact list would be.
+
+# %%
+f1_rows = []
+for fold, (y_valid, churn_probability) in enumerate(tuned_fold_scores):
+    precision_curve, recall_curve, thresholds = sk_metrics.precision_recall_curve(
+        y_valid, churn_probability
+    )
+    # The last precision and recall values have no threshold
+    precision_curve, recall_curve = precision_curve[:-1], recall_curve[:-1]
+    with np.errstate(divide="ignore", invalid="ignore"):
+        f1_curve = 2 * precision_curve * recall_curve / (precision_curve + recall_curve)
+    best = np.nanargmax(f1_curve)
+    f1_rows.append(
+        {
+            "Threshold": thresholds[best],
+            "Share flagged": (churn_probability >= thresholds[best]).mean(),
+            "Precision": precision_curve[best],
+            "Recall": recall_curve[best],
+            "F1": f1_curve[best],
+        }
+    )
+print("Tuned forest at the F1-maximizing threshold, ten validation folds")
+display(pd.DataFrame(f1_rows).agg(["mean", "std"]).round(4))
+
+# %% [markdown]
+# **The F1-maximizing threshold flags 61.2% of customers (SD 3.3 points).**
+# Its threshold is a churn probability of about 0.26, below the 28.8% churn
+# rate. It reaches 78.1% of churners, but only 36.8% of flagged customers
+# churn, compared with 52.9% when we contact the top 10%. F1 weighs missed
+# churners and wasted contacts equally, so it favors very long contact lists.
+# A retention team can rarely contact six in ten customers, so we fix the
+# contact budget instead and report F1 at that budget alongside precision and
+# recall.
 
 # %% [markdown]
 # ## Cost of outreach
@@ -530,7 +618,7 @@ scores = {
     ),
 }
 for share in CONTACT_SHARES:
-    for metric in ["Precision", "Recall", "Savings per 1,000 customers"]:
+    for metric in ["Precision", "Recall", "F1", "Savings per 1,000 customers"]:
         scores[f"{metric}, top {share:.0%}"] = (
             validation_outreach.loc[share, metric],
             test_outreach.loc[share, metric],
@@ -549,3 +637,18 @@ test_confusion = pd.crosstab(
 )
 print(f"Tuned forest, top {EVALUATION_SHARE:.0%} of test customers")
 display(test_confusion)
+
+# %% [markdown]
+# ## Test set results
+#
+# **The tuned forest reached a test AP of 0.4415 and ROC AUC of 0.6672, close
+# to its mean validation scores of 0.4468 and 0.6728.** The AP drop of 0.0053
+# is smaller than the fold-to-fold SD of 0.0068, so the validation results
+# carry over to new customers and the forest does not overfit the validation
+# folds. We ran the test set once and changed no setting afterward.
+#
+# Contacting the top 10% of the 10,210 test customers, 52.8% of contacted
+# customers churned (validation 52.9%). This reached 18.3% of all churners
+# and saved about $4,140 per 1,000 customers under the assumed costs. The
+# contacted group had 539 churners and 482 customers who stayed, and 2,403
+# churners were not contacted. Precision was 57.1% at 5% and 47.8% at 20%.

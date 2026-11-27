@@ -30,6 +30,7 @@ from joblib import parallel_config
 from sklearn import base as sk_base
 from sklearn import ensemble as sk_ensemble
 from sklearn import inspection as sk_inspection
+from sklearn import metrics as sk_metrics
 from sklearn import model_selection as sk_selection
 from sklearn import pipeline as sk_pipeline
 
@@ -270,8 +271,8 @@ print(f"The tuned model leads on {(ap_gain > 0).sum()} of {n_folds} folds by AP.
 # the share of all churners we contact, and lift is precision divided by the
 # fold's churn rate. Random contact gives a lift of 1.
 #
-# We refit the default and tuned models on the same ten training folds. The
-# test set stays unused.
+# We refit the default and tuned models on the same ten training folds and
+# calculate these outreach metrics on the corresponding validation rows.
 
 # %%
 CONTACT_SHARES = [0.05, 0.10, 0.20]
@@ -335,8 +336,8 @@ display(confusion)
 # churners: 60.3% precision and 10.5% recall at 5%, and 48.2% and 33.4% at 20%.
 #
 # In the first repeat, the top 10% contained 2,245 churners and 1,840 customers
-# who stayed. The other 9,524 churners were not contacted. The team still has
-# to agree on the contact budget before the final test evaluation.
+# who stayed. The other 9,524 churners were missed. The test evaluation below
+# uses the same contact shares, with 10% as the main budget.
 
 # %% [markdown]
 # ## Cost of outreach
@@ -440,10 +441,78 @@ plt.show()
 # all five folds when shuffled.
 
 # %% [markdown]
-# ## Final test evaluation
+# ## Test set evaluation
 #
-# Before using the reserved test split, we use the training partition to
-# settle the model comparison and fix the outreach budget. We then fit the
-# frozen pipelines on the full training partition and score them and the
-# baselines on the same test customers. We report test AP and ROC AUC, plus
-# precision and recall at the agreed budget. See [Model comparison](model_comparison.py).
+# We score the tuned boosting pipeline, fitted above on the full training
+# partition, on the reserved test customers. The model settings, contact
+# shares and cost assumptions come from the validation analysis. We compare
+# the resulting test scores with the means across the ten validation folds.
+
+# %%
+test = data.load_test()
+X_test = preprocessing.prepare_predictors(test)
+y_test = test["churn"]
+test_probability = tuned_pipeline.predict_proba(X_test)[:, 1]
+print(f"{len(y_test):,} test customers, churn rate {y_test.mean():.1%}")
+
+test_outreach = pd.DataFrame(
+    [
+        {
+            "Contact share": share,
+            **evaluation.outreach_scores(y_test, test_probability, share),
+        }
+        for share in CONTACT_SHARES
+    ]
+).set_index("Contact share")
+test_outreach["Savings per 1,000 customers"] = evaluation.savings_per_1000(
+    test_outreach, cost_matrix
+)
+validation_outreach = (
+    outreach.loc[outreach["Model"].eq(tuned_name)]
+    .groupby("Contact share")
+    .mean(numeric_only=True)
+)
+
+test_scores = {
+    "AP": (
+        tuning.loc[chosen_setting, "AP mean"],
+        sk_metrics.average_precision_score(y_test, test_probability),
+    ),
+    "ROC AUC": (
+        tuning.loc[chosen_setting, "ROC AUC mean"],
+        sk_metrics.roc_auc_score(y_test, test_probability),
+    ),
+}
+for share in CONTACT_SHARES:
+    for metric in ["Precision", "Recall", "F1", "Lift", "Savings per 1,000 customers"]:
+        test_scores[f"{metric}, top {share:.0%}"] = (
+            validation_outreach.loc[share, metric],
+            test_outreach.loc[share, metric],
+        )
+
+test_comparison = pd.DataFrame(test_scores, index=["Validation", "Test"]).T
+test_comparison["Test − validation"] = test_comparison["Test"] - test_comparison["Validation"]
+display(test_comparison.round(4))
+
+# %%
+test_confusion = pd.crosstab(
+    y_test.map({1: "Churned", 0: "Stayed"}).rename("Actual"),
+    pd.Series(evaluation.contact_top(test_probability, EVALUATION_SHARE), index=y_test.index)
+    .map({True: "Contacted", False: "Not contacted"})
+    .rename("Outreach"),
+)
+print(f"{tuned_name}, top {EVALUATION_SHARE:.0%} of test customers")
+display(test_confusion)
+
+# %% [markdown]
+# ## Test set results
+#
+# On 10,210 test customers, the tuned model reached AP 0.45695 and ROC AUC
+# 0.67394. The validation means were 0.45703 and 0.67846, respectively.
+#
+# At the 10% contact budget, test precision was 54.75%, recall was 19.00%,
+# F1 was 0.2821, and lift was 1.90. The contact list included 559 churners
+# and 462 customers who stayed. The other 2,383 churners were missed. Under
+# the stated cost assumptions, this list saves about $4,369 per 1,000 test
+# customers compared with no outreach. Precision was 61.76% at the 5%
+# budget and 48.78% at the 20% budget.
