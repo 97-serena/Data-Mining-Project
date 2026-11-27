@@ -34,9 +34,9 @@
 # ## Lock preprocessing, then tune the models
 #
 # We use the same five stratified folds and two repeats to compare preprocessing
-# with fixed, untuned estimators. The model notebooks use scikit-learn defaults,
-# fix random seeds where applicable, and give logistic regression enough
-# iterations to converge. Each option is fitted inside each fold.
+# using each estimator's default training hyperparameters, with a higher
+# iteration cap for logistic regression. We fix random seeds where applicable
+# and fit each option inside each fold.
 #
 # We look at the mean AP and subtract scores on matching folds to see how often
 # and by how much one option leads. A mean gap of at most 0.002 AP (0.2
@@ -55,6 +55,7 @@
 # | [Decision tree](decision_tree.py) | Frequency | Median fill |
 # | [Random forest](random_forest.py) | Frequency | Median fill |
 # | [Histogram gradient boosting](histogram_gradient_boosting.py) | Frequency | Native missing values |
+# | [CatBoost](catboost_classifier.py) | Native | Native missing values |
 #
 # Next we will vary the model hyperparameters and use validation AP to compare
 # them. Each run will fit the chosen preprocessing on that fold's training rows.
@@ -81,8 +82,10 @@ import sys
 from pathlib import Path
 
 import pandas as pd
+from catboost import CatBoostClassifier
 from IPython.display import display
 from sklearn import base as sk_base
+from sklearn import compose as sk_compose
 from sklearn import dummy as sk_dummy
 from sklearn import ensemble as sk_ensemble
 from sklearn import linear_model as sk_linear
@@ -99,6 +102,7 @@ if not (project_root / "src" / "data.py").is_file():
 sys.path.insert(0, str(project_root))
 
 from src import baselines, data, evaluation, preprocessing
+from src.features import CATEGORICAL_COLUMNS, SERVICE_AREA
 
 train = data.load_train()
 X = preprocessing.prepare_predictors(train)
@@ -131,7 +135,9 @@ RUN_TEST_EVALUATION = False
 # ## Final pipelines
 #
 # Each pipeline uses the preprocessing and hyperparameters chosen in its model
-# notebook. We fit them on the full training partition.
+# notebook. CatBoost carries forward its default training settings after
+# comparing them with the tuning grid. We fit the pipelines on the full
+# training partition.
 
 # %%
 final_pipelines = {
@@ -188,6 +194,21 @@ final_pipelines = {
             max_leaf_nodes=15,
             early_stopping=False,
             random_state=data.RANDOM_STATE,
+        ),
+    ),
+    "CatBoost": sk_pipeline.make_pipeline(
+        # Match the CatBoost notebook's feature order and keep column names.
+        sk_compose.ColumnTransformer(
+            [("service_area", "passthrough", [SERVICE_AREA])],
+            remainder="passthrough",
+            verbose_feature_names_out=False,
+        ).set_output(transform="pandas"),
+        CatBoostClassifier(
+            cat_features=(*CATEGORICAL_COLUMNS, SERVICE_AREA),
+            random_seed=data.RANDOM_STATE,
+            verbose=False,
+            allow_writing_files=False,
+            thread_count=N_JOBS,
         ),
     ),
 }
@@ -249,7 +270,7 @@ display(validation.sort_values("AP", ascending=False).round(4))
 # ## Test set
 
 # %%
-if not RUN_TEST_EVALUATION:
+if RUN_TEST_EVALUATION:
     raise RuntimeError(
         "Confirm the decisions above, then set RUN_TEST_EVALUATION = True to use the test set once."
     )
@@ -343,3 +364,5 @@ for metric in ["AP", "ROC AUC", "Precision"]:
     gap["Test − validation"] = gap["Test"] - gap["Validation"]
     print(metric if metric != "Precision" else f"Precision in the top {CONTACT_SHARE:.0%}")
     display(gap.round(4))
+
+# %%

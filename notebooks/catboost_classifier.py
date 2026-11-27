@@ -60,8 +60,9 @@ N_JOBS = 4
 #
 # We compare CatBoost's native handling of service area with frequency and
 # target encoding. The other predictors pass through, with missing numeric
-# values handled by CatBoost. We use 500 trees, depth 6 and a learning rate of
-# 0.05 for every preprocessing option, matching the initial benchmark.
+# values handled by CatBoost. Every option uses CatBoost's default training
+# hyperparameters, including its automatic learning rate. We fix the seed
+# for repeatability.
 
 # %%
 # Prefer native handling, then frequency encoding, when AP scores are close.
@@ -97,10 +98,6 @@ for encoding_name, encoder in encoding_options:
 
     model = CatBoostClassifier(
         cat_features=cat_features,
-        iterations=500,
-        depth=6,
-        learning_rate=0.05,
-        l2_leaf_reg=3,
         random_seed=data.RANDOM_STATE,
         verbose=False,
         allow_writing_files=False,
@@ -162,22 +159,29 @@ chosen_pipeline = pipelines[chosen_row]
 # %% [markdown]
 # ## Hyperparameter tuning
 #
-# We refit the chosen preprocessing on each fold's training rows. We tune
-# `depth` and `l2_leaf_reg`, which control tree size and leaf regularization.
-# We keep the learning rate and 500 boosting rounds fixed.
+# We refit the chosen preprocessing on each fold's training rows. We
+# compare tree depths and L2 leaf regularization at 500 boosting rounds and
+# a learning rate of 0.05. These settings apply to the tuning grid.
 #
-# We use the same ten validation folds. Among settings within 0.002 AP of the
-# best, we prefer shallower trees, then stronger regularization.
+# We compare the grid with the default model on the same ten validation folds.
+# To carry a grid candidate forward, its mean AP must be within 0.002 of the
+# highest score across both. Among eligible grid candidates, we prefer
+# shallower trees, then stronger regularization. If every grid candidate
+# falls outside that range, we carry the default model forward and report
+# the highest-scoring grid candidate for comparison.
 
 # %%
 model_step = chosen_pipeline.steps[-1][0]
+tuning_pipeline = sk_base.clone(chosen_pipeline).set_params(
+    **{f"{model_step}__iterations": 500, f"{model_step}__learning_rate": 0.05}
+)
 param_grid = {
     f"{model_step}__depth": [5, 6],
     f"{model_step}__l2_leaf_reg": [3, 10],
 }
 
 search = sk_selection.GridSearchCV(
-    estimator=chosen_pipeline,
+    estimator=tuning_pipeline,
     param_grid=param_grid,
     scoring=["average_precision", "roc_auc"],
     cv=splitter,
@@ -201,38 +205,55 @@ tuning = pd.DataFrame(
         "ROC AUC mean": cv_results["mean_test_roc_auc"],
     }
 )
-tuning["Near tie"] = tuning["AP mean"] >= tuning["AP mean"].max() - AP_TOLERANCE
-chosen_setting = tuning.loc[tuning["Near tie"]].sort_values(
-    ["Depth", "L2 regularization", "AP mean"], ascending=[True, False, False]
-).index[0]
+default_ap = results.loc[chosen_row, "AP mean"]
+best_grid_ap = tuning["AP mean"].max()
+best_ap = max(default_ap, best_grid_ap)
+tuning["Near tie"] = tuning["AP mean"] >= best_ap - AP_TOLERANCE
+eligible = tuning.loc[tuning["Near tie"]]
+if eligible.empty:
+    chosen_setting = tuning["AP mean"].idxmax()
+else:
+    chosen_setting = eligible.sort_values(
+        ["Depth", "L2 regularization", "AP mean"], ascending=[True, False, False]
+    ).index[0]
 
 tuning["AP difference"] = fold_ap.sub(fold_ap.loc[chosen_setting], axis="columns").mean(axis=1)
-print("Chosen hyperparameters")
+chosen_ap = tuning.loc[chosen_setting, "AP mean"]
+print(f"Default mean AP {default_ap:.5f} and highest grid mean AP {best_grid_ap:.5f}")
+print(f"Reporting grid candidate at {chosen_ap:.5f} AP (gap to best {best_ap - chosen_ap:.5f})")
 display(tuning.loc[[chosen_setting]].round(5))
 display(tuning.sort_values("AP mean", ascending=False).round(5))
 
 # %%
-tuned_pipeline = sk_base.clone(chosen_pipeline).set_params(
+tuned_pipeline = sk_base.clone(tuning_pipeline).set_params(
     **cv_results.loc[chosen_setting, "params"]
 )
-_ = tuned_pipeline.fit(X, y)
 
 # %% [markdown]
 # ## Model evaluation
 #
-# We compare the reference and tuned estimators with the chosen preprocessing.
+# We compare the default and tuned estimators with the chosen preprocessing.
 # These development scores use the ten validation folds that informed tuning.
 
 # %%
 metrics = ["AP mean", "AP SD", "ROC AUC mean"]
 comparison = pd.DataFrame(
     [results.loc[chosen_row, metrics], tuning.loc[chosen_setting, metrics]],
-    index=["Reference CatBoost", "Tuned CatBoost"],
+    index=["Default CatBoost", "Tuned CatBoost"],
 )
+default_name, tuned_name = comparison.index
+pipelines = {default_name: chosen_pipeline, tuned_name: tuned_pipeline}
+selected_name = tuned_name if tuning.loc[chosen_setting, "Near tie"] else default_name
+selected_pipeline = pipelines[selected_name]
 display(comparison.round(5))
+print(f"Carry forward {selected_name} to the model comparison.")
 
 ap_gain = fold_ap.loc[chosen_setting].to_numpy() - ap_by_option[chosen_row]
-print(f"The tuned model leads on {(ap_gain > 0).sum()} of {n_folds} folds by AP.")
+print(
+    f"The grid candidate changes mean AP by {ap_gain.mean():+.5f} from defaults "
+    f"and scores higher on {(ap_gain > 0).sum()} of {n_folds} folds."
+)
+_ = selected_pipeline.fit(X, y)
 
 # %% [markdown]
 # ## Outreach at a fixed contact budget
@@ -244,15 +265,13 @@ print(f"The tuned model leads on {(ap_gain > 0).sum()} of {n_folds} folds by AP.
 # the share of all churners we contact, and lift is precision divided by the
 # fold's churn rate. Random contact gives a lift of 1.
 #
-# We refit the reference and tuned models on the same ten training folds. The
+# We refit the default and tuned models on the same ten training folds. The
 # test set stays unused.
 
 # %%
 CONTACT_SHARES = [0.05, 0.10, 0.20]
 EVALUATION_SHARE = 0.10
 
-default_name, tuned_name = comparison.index
-pipelines = {default_name: chosen_pipeline, tuned_name: tuned_pipeline}
 outreach_rows = []
 # Each customer appears once in the validation folds of the first repeat
 contacted_first_repeat = pd.Series(False, index=X.index)
@@ -271,7 +290,7 @@ for fold, (fit_rows, valid_rows) in enumerate(splitter.split(X, y)):
                     **evaluation.outreach_scores(y_valid, churn_probability, share),
                 }
             )
-        if name == tuned_name and fold < N_SPLITS:
+        if name == selected_name and fold < N_SPLITS:
             contacted_first_repeat.iloc[valid_rows] = evaluation.contact_top(
                 churn_probability, EVALUATION_SHARE
             )
@@ -295,7 +314,7 @@ confusion = pd.crosstab(
     y.map({1: "Churned", 0: "Stayed"}).rename("Actual"),
     contacted_first_repeat.map({True: "Contacted", False: "Not contacted"}).rename("Outreach"),
 )
-print(f"{tuned_name}, top {EVALUATION_SHARE:.0%} of each validation fold in the first repeat")
+print(f"{selected_name}, top {EVALUATION_SHARE:.0%} of each validation fold in the first repeat")
 display(confusion)
 
 # %% [markdown]
@@ -337,7 +356,7 @@ print(f"Break-even precision: {CONTACT_COST / (SAVE_RATE * CHURN_LOSS):.1%}")
 # %% [markdown]
 # ## Top 10 features by permutation importance
 #
-# We refit the tuned pipeline on each training fold in the first repeat. Its
+# We refit the selected pipeline on each training fold in the first repeat. Its
 # five validation folds cover every training customer once. On each validation
 # fold, we shuffle each input five times and measure how much AP drops. We
 # shuffle before feature encoding so that a categorical input and all its
@@ -350,7 +369,7 @@ first_repeat = list(splitter.split(X, y))[:N_SPLITS]
 permutation_rows = []
 with parallel_config(backend="loky", inner_max_num_threads=1):
     for fit_rows, valid_rows in first_repeat:
-        fold_pipeline = sk_base.clone(tuned_pipeline).fit(X.iloc[fit_rows], y.iloc[fit_rows])
+        fold_pipeline = sk_base.clone(selected_pipeline).fit(X.iloc[fit_rows], y.iloc[fit_rows])
         permutation = sk_inspection.permutation_importance(
             fold_pipeline,
             X.iloc[valid_rows],
